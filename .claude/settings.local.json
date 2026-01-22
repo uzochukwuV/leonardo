@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(leo build:*)",
+      "Bash(leo test:*)",
+      "Bash(mkdir:*)"
+    ]
+  }
+}

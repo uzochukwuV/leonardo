@@ -1,0 +1,141 @@
+{
+  "type": "deploy",
+  "id": "at12t7nky0vnd0ugwlc9yv8c6ha9mlqfljx2krkqf8cua6mfwt6fgps22m0kc",
+  "owner": {
+    "address": "aleo1hjr3xkvwtkuafnmn8273vd7najxd00gmqseuccj2f50q2ep9dcyq8w8exf",
+    "signature": "sign1t4wkaxz8juys7hzn2ve8lepvam6fzzgdkhwdqxn8qsu5hjm0eyq6guj6s26s9u374f0xnvyn7nrj3me56a3ljx73j73qggz9sculkquu4dy6042esxf8urss24v6hjprr4urhjh2fdz2pmegjaaermdjqwzv8phyyftc4jc6940lxdkd4snpsrzgf99756ypvgezq98g6d3qxv5k26z"
+  },
+  "deployment": {
+    "edition": 0,
+    "program": "import credits.aleo;\nimport token_registry.aleo;\n\nprogram sl.aleo;\n\nrecord Token:\n    owner as address.private;\n    amount as u64.private;\n    token_id as field.private;\n    external_authorization_required as boolean.private;\n    authorized_until as u32.private;\n\nrecord TickOrder:\n    owner as address.private;\n    token_pair as u64.private;\n    tick_lower as u64.private;\n    tick_upper as u64.private;\n    is_buy as boolean.private;\n    quantity as u64.private;\n    limit_price as u64.private;\n    token_id as field.private;\n    escrowed_amount as u64.private;\n    filled as u64.private;\n    timestamp as u32.private;\n\nrecord Settlement:\n    owner as address.private;\n    token_pair as u64.private;\n    quantity as u64.private;\n    price as u64.private;\n    is_buy as boolean.private;\n    timestamp as u32.private;\n\nstruct TickInfo:\n    token_pair as u64;\n    tick_id as u64;\n    order_count as u32;\n    total_volume_settled as u64;\n    last_updated as u32;\n\nstruct TokenMetadata:\n    token_id as field;\n    name as u128;\n    symbol as u128;\n    decimals as u8;\n    supply as u128;\n    max_supply as u128;\n    admin as address;\n    external_authorization_required as boolean;\n    external_authorization_party as address;\n\nstruct TokenOwner:\n    account as address;\n    token_id as field;\n\nmapping tick_registry:\n    key as field.public;\n    value as TickInfo.public;\n\nmapping order_fills:\n    key as field.public;\n    value as u64.public;\n\nmapping tick_volumes:\n    key as field.public;\n    value as u64.public;\n\nfunction submit_tick_order_with_escrow:\n    input r0 as u64.public;\n    input r1 as boolean.public;\n    input r2 as u64.public;\n    input r3 as u64.public;\n    input r4 as u32.public;\n    input r5 as u64.private;\n    input r6 as u64.private;\n    input r7 as Token.record;\n    sub r3 r2 into r8;\n    lte r8 50u64 into r9;\n    assert.eq r9 true;\n    mul r2 100u64 into r10;\n    add r3 1u64 into r11;\n    mul r11 100u64 into r12;\n    gte r5 r10 into r13;\n    assert.eq r13 true;\n    lte r5 r12 into r14;\n    assert.eq r14 true;\n    gt r6 0u64 into r15;\n    assert.eq r15 true;\n    mul r6 r5 into r16;\n    div r16 10000u64 into r17;\n    ternary r1 r17 r6 into r18;\n    gte r7.amount r18 into r19;\n    assert.eq r19 true;\n    is.eq r7.owner self.caller into r20;\n    assert.eq r20 true;\n    cast self.caller r0 r2 r3 r1 r6 r5 r7.token_id r18 0u64 r4 into r21 as TickOrder.record;\n    sub r7.amount r18 into r22;\n    cast self.caller r22 r7.token_id r7.external_authorization_required r7.authorized_until into r23 as Token.record;\n    output r21 as TickOrder.record;\n    output r23 as Token.record;\n\nfunction submit_tick_order:\n    input r0 as u64.public;\n    input r1 as boolean.public;\n    input r2 as u64.public;\n    input r3 as u64.public;\n    input r4 as u32.public;\n    input r5 as u64.private;\n    input r6 as u64.private;\n    sub r3 r2 into r7;\n    lte r7 50u64 into r8;\n    assert.eq r8 true;\n    mul r2 100u64 into r9;\n    add r3 1u64 into r10;\n    mul r10 100u64 into r11;\n    gte r5 r9 into r12;\n    assert.eq r12 true;\n    lte r5 r11 into r13;\n    assert.eq r13 true;\n    gt r6 0u64 into r14;\n    assert.eq r14 true;\n    cast self.caller r0 r2 r3 r1 r6 r5 0field 0u64 0u64 r4 into r15 as TickOrder.record;\n    output r15 as TickOrder.record;\n\nfunction update_order:\n    input r0 as TickOrder.record;\n    input r1 as u64.public;\n    input r2 as u64.public;\n    input r3 as u64.private;\n    input r4 as u64.private;\n    is.eq r0.owner self.caller into r5;\n    assert.eq r5 true;\n    lt r0.filled r0.quantity into r6;\n    assert.eq r6 true;\n    sub r2 r1 into r7;\n    lte r7 50u64 into r8;\n    assert.eq r8 true;\n    mul r1 100u64 into r9;\n    add r2 1u64 into r10;\n    mul r10 100u64 into r11;\n    gte r3 r9 into r12;\n    assert.eq r12 true;\n    lte r3 r11 into r13;\n    assert.eq r13 true;\n    gte r4 r0.filled into r14;\n    assert.eq r14 true;\n    gt r4 0u64 into r15;\n    assert.eq r15 true;\n    cast r0.owner r0.token_pair r1 r2 r0.is_buy r4 r3 r0.token_id r0.escrowed_amount r0.filled r0.timestamp into r16 as TickOrder.record;\n    output r16 as TickOrder.record;\n\nfunction settle_match:\n    input r0 as TickOrder.record;\n    input r1 as TickOrder.record;\n    input r2 as u32.public;\n    is.eq r0.token_pair r1.token_pair into r3;\n    assert.eq r3 true;\n    is.eq r0.is_buy true into r4;\n    assert.eq r4 true;\n    is.eq r1.is_buy false into r5;\n    assert.eq r5 true;\n    gt r0.tick_lower r1.tick_lower into r6;\n    ternary r6 r0.tick_lower r1.tick_lower into r7;\n    lt r0.tick_upper r1.tick_upper into r8;\n    ternary r8 r0.tick_upper r1.tick_upper into r9;\n    lte r7 r9 into r10;\n    assert.eq r10 true;\n    gte r0.limit_price r1.limit_price into r11;\n    assert.eq r11 true;\n    mul r0.tick_lower 100u64 into r12;\n    gte r0.limit_price r12 into r13;\n    assert.eq r13 true;\n    add r0.tick_upper 1u64 into r14;\n    mul r14 100u64 into r15;\n    lte r0.limit_price r15 into r16;\n    assert.eq r16 true;\n    mul r1.tick_lower 100u64 into r17;\n    gte r1.limit_price r17 into r18;\n    assert.eq r18 true;\n    add r1.tick_upper 1u64 into r19;\n    mul r19 100u64 into r20;\n    lte r1.limit_price r20 into r21;\n    assert.eq r21 true;\n    lt r0.filled r0.quantity into r22;\n    assert.eq r22 true;\n    lt r1.filled r1.quantity into r23;\n    assert.eq r23 true;\n    sub r0.quantity r0.filled into r24;\n    sub r1.quantity r1.filled into r25;\n    lt r24 r25 into r26;\n    ternary r26 r24 r25 into r27;\n    add r0.limit_price r1.limit_price into r28;\n    div r28 2u64 into r29;\n    add r0.filled r27 into r30;\n    cast r0.owner r0.token_pair r0.tick_lower r0.tick_upper r0.is_buy r0.quantity r0.limit_price r0.token_id r0.escrowed_amount r30 r0.timestamp into r31 as TickOrder.record;\n    add r1.filled r27 into r32;\n    cast r1.owner r1.token_pair r1.tick_lower r1.tick_upper r1.is_buy r1.quantity r1.limit_price r1.token_id r1.escrowed_amount r32 r1.timestamp into r33 as TickOrder.record;\n    cast r0.owner r0.token_pair r27 r29 true r2 into r34 as Settlement.record;\n    cast r1.owner r1.token_pair r27 r29 false r2 into r35 as Settlement.record;\n    output r31 as TickOrder.record;\n    output r33 as TickOrder.record;\n    output r34 as Settlement.record;\n    output r35 as Settlement.record;\n\nfunction settle_match_with_transfer:\n    input r0 as TickOrder.record;\n    input r1 as TickOrder.record;\n    input r2 as Token.record;\n    input r3 as Token.record;\n    input r4 as u32.public;\n    is.eq r0.token_pair r1.token_pair into r5;\n    assert.eq r5 true;\n    is.eq r0.is_buy true into r6;\n    assert.eq r6 true;\n    is.eq r1.is_buy false into r7;\n    assert.eq r7 true;\n    gt r0.tick_lower r1.tick_lower into r8;\n    ternary r8 r0.tick_lower r1.tick_lower into r9;\n    lt r0.tick_upper r1.tick_upper into r10;\n    ternary r10 r0.tick_upper r1.tick_upper into r11;\n    lte r9 r11 into r12;\n    assert.eq r12 true;\n    gte r0.limit_price r1.limit_price into r13;\n    assert.eq r13 true;\n    lt r0.filled r0.quantity into r14;\n    assert.eq r14 true;\n    lt r1.filled r1.quantity into r15;\n    assert.eq r15 true;\n    sub r0.quantity r0.filled into r16;\n    sub r1.quantity r1.filled into r17;\n    lt r16 r17 into r18;\n    ternary r18 r16 r17 into r19;\n    add r0.limit_price r1.limit_price into r20;\n    div r20 2u64 into r21;\n    mul r19 r21 into r22;\n    div r22 10000u64 into r23;\n    is.eq r2.owner r1.owner into r24;\n    assert.eq r24 true;\n    is.eq r3.owner r0.owner into r25;\n    assert.eq r25 true;\n    gte r2.amount r19 into r26;\n    assert.eq r26 true;\n    gte r3.amount r23 into r27;\n    assert.eq r27 true;\n    cast r0.owner r19 r2.token_id r2.external_authorization_required r2.authorized_until into r28 as Token.record;\n    cast r1.owner r23 r3.token_id r3.external_authorization_required r3.authorized_until into r29 as Token.record;\n    add r0.filled r19 into r30;\n    cast r0.owner r0.token_pair r0.tick_lower r0.tick_upper r0.is_buy r0.quantity r0.limit_price r0.token_id r0.escrowed_amount r30 r0.timestamp into r31 as TickOrder.record;\n    add r1.filled r19 into r32;\n    cast r1.owner r1.token_pair r1.tick_lower r1.tick_upper r1.is_buy r1.quantity r1.limit_price r1.token_id r1.escrowed_amount r32 r1.timestamp into r33 as TickOrder.record;\n    cast r0.owner r0.token_pair r19 r21 true r4 into r34 as Settlement.record;\n    cast r1.owner r1.token_pair r19 r21 false r4 into r35 as Settlement.record;\n    output r31 as TickOrder.record;\n    output r33 as TickOrder.record;\n    output r28 as Token.record;\n    output r29 as Token.record;\n    output r34 as Settlement.record;\n    output r35 as Settlement.record;\n\nfunction cancel_order:\n    input r0 as TickOrder.record;\n    is.eq r0.owner self.caller into r1;\n    assert.eq r1 true;\n    lt r0.filled r0.quantity into r2;\n    assert.eq r2 true;\n    output true as boolean.private;\n\nfunction cancel_order_with_refund:\n    input r0 as TickOrder.record;\n    is.eq r0.owner self.caller into r1;\n    assert.eq r1 true;\n    lt r0.filled r0.quantity into r2;\n    assert.eq r2 true;\n    mul r0.filled r0.limit_price into r3;\n    div r3 10000u64 into r4;\n    ternary r0.is_buy r4 r0.filled into r5;\n    sub r0.escrowed_amount r5 into r6;\n    cast r0.owner r6 r0.token_id false 0u32 into r7 as Token.record;\n    output true as boolean.private;\n    output r7 as Token.record;\n\nfunction get_order_info:\n    input r0 as TickOrder.record;\n    is.eq r0.owner self.caller into r1;\n    assert.eq r1 true;\n    output r0.token_pair as u64.private;\n    output r0.tick_lower as u64.private;\n    output r0.tick_upper as u64.private;\n    output r0.quantity as u64.private;\n    output r0.is_buy as boolean.private;\n    output r0.filled as u64.private;\n\nconstructor:\n    assert.eq edition 0u16;\n",
+    "verifying_keys": [
+      [
+        "submit_tick_order_with_escrow",
+        [
+          "verifier1qysqqqqqqqqqqq8wdsqsqqqqqqq9zmgpqqqqqqqqevqsxqqqqqqqq50mqgqqqqqqqq25yqsqqqqqqqqvqqqqqqqqqqqy6a2rhup30vgp2gm5f02em56s3ak98r0ru9jwpmeqxvl3sg86vfdsuuxl966wdyfq7jxg3yukv6uq8033aj8wa805km2dsw4mw8cd8dqs7l4yctxsw6stapqzu6ytg9kre9sweyuf20hpekhsznengw2qq7du95fezu6cfq2w0n4lga6exzpd6u74uh44ajxnutafscsdgq534df2upk2cj7psej39rflj9efsqwv78udcwssl72z0e4h3jcjsvjztzc0qtyafhu47urelvx8h0hk7qyvhp92n4whu7mftxll0c2a0qrclvcd6spcepdqsn6mh9lacgpjjg9sclae3peqnedq0794kqrzv6dav5kpdwxxhqt44fsfwvwq3xqyzrar2t8m558gkwd9jle2wr0yl9hjm0x5fvf6wcscmpm3ufjzuf3wa3gpfjj64m0wh9umrjgz26yqr5lt0k0t4xelu3vpv6q3v237v40qlche0m3fv6un35a6qa8z0sk9zj6akprq3njj5ks6refksvlqqt60a8ng943f9gea6fwcpfzw3ls3zvjw33rc4hjf8m9awc5zkqzt3dt5tnnkpcdqef76vlnn335lqr5ku92f79ce39kcexpmlcpcy57jcuje6kyue2l03lwgcg57jyp8cpr8gttunk0u0ag8zptt8l8wzqrdz7u8nudu9pqcysja4tdx048jnpc5jztwu3rmshka70hdxcszc88wnpw2uka7p7grpzr7up666xqwv0t8f6uk7t2u7dnuacmpxflv37c3fe27shtzfc35jv4q4c0v49et6dxcg368nwrmqg6kjpdv5wcqekzyvfsngkxkgc2y87puetk0v9sd255ch5urs2qfy8ur60rh3t4vh8apf0vr4gdr9738h3gxkt9cpjvnxm0kny6ffr2ju4nzta5udmp9egpyanduvedvul4z6cy7mfevzhyszqqqqqqqqqtjyfh",
+          "certificate1qyqsqqqqqqqqqq959nj59emhrky07facg8efgvrgpgt00falh3pkyypgye5xm7yr28t6cxp9tuuhs6ptv79c59pnh2qqqjthfxm"
+        ]
+      ],
+      [
+        "submit_tick_order",
+        [
+          "verifier1qysqqqqqqqqqqqzehsqqqqqqqqq8h0qqqqqqqqqqe7hqzqqqqqqqq578qyqqqqqqqzxz2qgqqqqqqqqvqqqqqqqqqqq0r0zlz35f9k6cpkld6ft2wun742kz7vqa25v5qqfm7tda5sa4epklxmcaga55ezhkezj8r2676lsp62n4r6rrj29saqd4rsawv7nq5y4prkvrnrrjzhkf9hwmk80zvqca2p6tps26jlr02ccpx28k685cpqlqtdyjcunywf9ay56duun9ss96ts6tg4h3sp4tegc82q99s6fqhymlkny5f2ceudanyyr6wu4lsra6yf5jyxcy6elhca63cwfgnmtnj8a74sy8f8t5909t6ulrzhy3nul5yaf65q7h353ar2qrulk9nqw9yd9gs0axyx93yp3ukpy7yzn7233cj8q56575gdhme2kysta2h84wuhdk09ls2cqn57rjfpvf0jqqxzuk3v8892pdh7jsq69pvpk6lj42zcmz5u5wdgw2z9zegcmn578d6yrcel252e4d8xlprqc48fsqj7xlyx6kvrgkjne576lsstuc665xknfmrqtpuaumwga6g8sd6sve5c5zggu0wkx39m9mkj6gfmgcpu4dkay4crde5rn00vkyx8jqks6986l60a85pr8wqsjr7k25u6pl47pxudtwhd70agm7ddwp686xqpfufsedv3zq8vapykfsyuxfu0ywvhkfxrev8n87xwx934006remq95tyn8ls7kdccq9uuu6mk8wlqzflrszqfzeeyak4anu30lsmd3vrn08sh00qpljegxxpxs5udkyyyxj3a2dpgl8qac34kvdkgmqfyqkwzk26neykapkjjyn8vdme0zya5fpctw8kazn7yr8yel04aj7fc8r4d8q6n8ycxcy8gpwhpce7muqgj4rznuy54lmxhtxyc4ttkcy4hx8wmfkyhnrw4xcrhcwf2nh0ljnwnq9fpkvpk6jw6f9gh8kj7gsz5pa36caphtwvyy3kut2hashdr33sg9f23mwh6uwrj50zluzyghskr5sqqqqqqqqqjupx9g",
+          "certificate1qyqsqqqqqqqqqqp2epeavz07jw9ns0uy56q38rp4fydlrpeej02ae7q28kcd350dfxngvh92tsdmc8v46yxya9lqduqqq4xj59r"
+        ]
+      ],
+      [
+        "update_order",
+        [
+          "verifier1qysqqqqqqqqqqqqvzyqsqqqqqqqywygpqqqqqqqqxclqyqqqqqqqqsf6qgqqqqqqqzh6uqgqqqqqqqqvqqqqqqqqqqqte9yd9nx45val2ca9vjhgzj52q2vpmqq9mmtvn9t8gycdyal4e37nzllcrlgke246q452fzgq6cqpe59cl5x7mep6kq3avefu72zzakrd5zn6egudhnjkmpm4x4re040gtzm4me0zjvkahj00rspudsacph0sfn3k99kcg69j9lfeycmfpgy355pvxvl2t4s5kzc29zeftzk35u0k83ks3d2dsd2qtzp6vhzlqq8cd2jgnngw9rt3y204fwyapvrpsxfvm0fspdmd0upxxryyqje933aqx5mg980u2k3rsggu0pjshq9xl4e9j0e6kqm6g5ths9e0as7w4253kakj37frwvnz2e4d6p4sq9s4ec9tugc3q7t46595r5xaqzqkhmuhsuk5fy8ea8qtvprq7g8jmxsy5lslr7e8d8j3x680n90sepvzzrshnkhxecz0mt2acw74ueupdc4tz0hwg2p5pjywc9u5fgjttepqduqjh7706lx7xmahgkjj6mvktn9sx0nyepaua6ah44uv5yvgr3846rvw2rplv7zwt4dm9j80sthnhwwxyf3p6pdg7jevh300axq5s9qs02kt300yy94t7y7rtu5ysqxl926l4mxkgjrx2dm3lu779mcywmk9f36pkvndzt98jc90ed579p0q26wps0npw666x7ufdzkhuq8lvgna4udmf679q3ckp07yvj3zv9smr37ypq77pt4cf4kw6my3mxvkvphlsje35lmqtaemw8hxw7qqge49pe9dkfl47jv63unln0zhwqp37t636se7yj4ef84mx752gcj6hsyd59yqa5kfpq4f0eg6fxgqa3fxz309pv3txrrqrefwk700y0qt963e947fg388pq75a706pla84vcpjx5pt8uq3xzw9vzx2zxsrs9v80mjw74fguclvs86jqr2h3k3wasnqc44jvszqzzp9jacl070j9tszqqqqqqqqeuyk4f",
+          "certificate1qyqsqqqqqqqqqqpt432nzg2cr37y0rkdkhvmp574umt8rjtdxf7n2fr5mw6ksz2ayew3t2p4e0er665p0tdzqwdpluqqqgjejej"
+        ]
+      ],
+      [
+        "settle_match",
+        [
+          "verifier1qysqqqqqqqqqqqr7jspqqqqqqqq9n9gzqqqqqqqqcs5q2qqqqqqqq9tlqsqqqqqqqr4r6pqqqqqqqqqvqqqqqqqqqqqfpp77egex6ucga4esum3vy7fl49g4ja827zxn95ha24pr2pqh9xtgw3j8fl6x72ufyyplcg0339sqlt02hu5dvt9tp8gyvwndzrjpzls3szwqvtzwu54yvy4n8vkmkcq0p5ul5gce9j3wkvs0pa6e5jkcrppgufaeyfcwymxf4p7sp4hwlfycnugqrjwxsscm3avefelvjukc5xmkleshdvf8jt33tv86dzwcqqxeu0xs6kw2q70jvvhxk72dszwvhvuf9utnqfj5ve5k5nk8gct84hhw52eqf66e5yf0v0jnxwrf6qtty5geqh38l6p7ptend7eqqaleyrzdfm6kklztufdytkp29arspuglgfrn5u4q4502wvuktgup2jqeyzmpre4xnyzrktgrjfsd6aaxs3zekccjmaefv9dggux70d93vgnf2xd8w96g3wxpdsnnn37d09upyqq8urup2m6y68ffswjll9mxwpxlshau5u3ryeq7g8w6twr8jptf430yu794fghhvpu4ytca4qycz2t2tqcmg07vhk6v2sfkx6ca445nynkmzgcrez5kpwmmveyunzhz48cxweyyvw3zucfzp66gjr65s8turxda8ylfqt5sgqqcm9y6h02yws6a3mxyuz9ca76rye426rj7g6waschngxaxfqdumdu236wfnqg8c6yws6lk7z6lvzxvvw8awsxsm42se083knf2pl9zfwck69zagrlrm6s9srk64yj80a8wz4usjkqa6wm7n0qqsne0h7mlczqp9cd2x4fxuqw0e3hg2aw837z2ls77pe357pldzd0yaqw5rv8tyf3q8dvqaqagyv7uyn4js9jt2ar52dq7j67g3mr8tc276hprff23gx5vqws3akv47ryh0u5rrysgnd5h6q8czhlhyhymuxxueyrl845tvtg3sregd4gkrmwuyxxh66x5dufua9qupfrqxqqqqqqqqskjrqj",
+          "certificate1qyqsqqqqqqqqqq84vakeycdhtx2gk39hrlk47d600vu7fhuzxh3yam9j8s2qus5l4udvrpsawt6njy7mga9g44pgwcqsqqc4ugh"
+        ]
+      ],
+      [
+        "settle_match_with_transfer",
+        [
+          "verifier1q9qqqqqqqqqqqqzyucpsqqqqqqqx0ecrqqqqqqqqdk3qwqqqqqqqqlx8qcqqqqqqqr84upsqqqqqqqqvqqqqqqqqqqq9v53kuezrnj3f9276fsl9v2mkfa8f0nmn3jzsdml47u93z2vmea87klxqrnhen0deg0jw46uenqsp0mkxczl8w666ffxeql0j2evysfma8y72ccy4le7tgtmhpp65kfnhpm76kevp6uj7vrcdyar6ql2cpnfapunzw5e5uej0qu6kqg0qcxy009dyu7ljww5vyd5a5hqjn6tv2hh733r6rmk9hej3apmwhmnnqqplr0g45ttzpvzkg8tk32w20hxsmxlxqnyxj2lc6w9jjnft4y0galzjd6phee0a6044eajq2gl64qqugjus2jz98xlp2sgykk45taatwr6d76wg9d55r364dnnrfkrs3d8fmwdtuz0h69sff5quzxqmygqfw3f6a74p7sx4azy20skgyzwh33a9dsel3r8rhxk0hcxsuu9tx62cyzl2mdx79ecw8tr98d7ywvgqesv5x03xu3j490cj0sgltvh64xc5r2wn6pyf888famlvz3s4qfqar0es6m7vsz4pew4j2gq6dxmqqqga3ae9r9cke39zmpjjc7nvrrc4p2xz5hd9yn3m9jdn0d9uh6vzz5zg3lhzv6rducdcrqsxz0yrsphdgzajtjt8vqg6rwwwp3q04emmhlzp7yfcqrcjq5lzdv9pqpdd5d7sjfp2qptdegkczxpvu6fyvqqx5a00rzpq2q058aa84qma4a3866ef3y6tdq2zlr4tdha7ezwrd5lapq52yjh4edd3mz5exn6mcqqgay26qp83rjxzznhh033ed2hc6j5sfalvkalaqcxnr0ffcshhuvhdh2jl8tnkrm34jfulzpehggqptmux0jarsru2r8cyn05fp0pkap95v3tmxq3cd49u7kk4tx887zcwwp36watmplsdxj98rnp8nvjczhhhap3yy34grlnvvvadxq9qunthzd58tvvw9t9ql5wg6jvpy8jmtlesgqqqqqqqqfe392a",
+          "certificate1qyqsqqqqqqqqqqppyq03mkwrvhd4t3jajk72mav29qrzeleqkq79vt7dl7ec99mtrme2dc49982vee39ev2rdezxuyqqqh4j4sn"
+        ]
+      ],
+      [
+        "cancel_order",
+        [
+          "verifier1qygqqqqqqqqqqqy8sgqqqqqqqqqf9qsqqqqqqqqqyrusqqqqqqqqpqs0qyqqqqqqqrtuyqqqqqqqqqqvqqqqqqqqqqq008gtg2k89xuspg4vsrqzm2n252scxm9wn5jaf3ns6haqwjl32j8dqvvjqs9nj2mg26ht64lvx3gpww9yxactu4wu3p5jehqvxgvns0d5dsny7wzq76yzd0yv0drzrvv5efpnu8yfejhj9n2lqyyumpqcz920ar97yxm8f5f7ksry0mkq4vq27r5day50fh9p05le0sq54f0c69eql3v75grz28pakyywmaj3qxlh0g8kytzahzddr77v22aj98ycey8enk93p9t432u2m65864mzl6ap8g796w93ppt6jujq8sle7q25ja2fh6hdz0symfcs4t7sjvthaj3l7mrf8jylcnyzws369ulgqacpjyr2d56m90wzejaak8p05qqvjjvnzcqruwv2alk266jcmrrwhvu4jv4hve2gawwy9ycrug3enh07puj9ffpsd68k9adkcfmf9lqqse7mcscq09fzft4l8dffhrzz5ltw52djgx2440rgx68z04xf0x4mna85mel9s6t3le7fxfm2u5scrm5fd4zxasakj3geywxjhha6c4fswrsa332pf6fyuhvcynrr2c7m6wywtqm02gwhqgp548l2cxs4qqk2fx7g0jycd59eevq6ansnzt9rca002dn92hj98nuzv6n4rvnx0zyvwkta020d687f76kq8y0dsqpt97kadjtdqu6k27j2q4ncvu2m9encmjwzarjg2ywlzf9pr5a5xhrlajy38s5g65lh9u3a7e0rx6qaxh7dmnlffvshdqefauar83yad9xkp4jd0xek9jjp9s3ujc2cekjm2czh6f7wkqerkm62fkpxamcqxz5nda2y39h3wj096d3yv4pfk952crg3g5zvyw8ussu2ftfwr4h7mmsfttchzhq0sylf6xy23degrhsyfpv7wl857khxg8rygle4c27tfxuqnq4uqkhaevr9cm5j63x0fxksqqqqqqqqqsya0e0",
+          "certificate1qyqsqqqqqqqqqq8yshujpa848dtwdv0fklylcnlytkmdhx5cf7q0p37sryhf05n98f2qpgwe6frz3jc8cnq25wmg35qqqzfyaqv"
+        ]
+      ],
+      [
+        "cancel_order_with_refund",
+        [
+          "verifier1qygqqqqqqqqqqqylmcqqqqqqqqqd9hsqqqqqqqqqp7eszqqqqqqqpqdvqyqqqqqqqps96qgqqqqqqqqvqqqqqqqqqqqzhrrkxksz7rv4t97l9s440x3yaqq4fnthzncd35am34hjaqrvx9kflgfxcvl0ys4p05ywnqpwfluqc0fwnawx6plxgzklynmvw4yq93uns5ar8q4swpl397tmftas6fjvpr4mqm979e0gm22fspqd8qvgrk9jscqrqedqe00tnpvqme0ztafe3w4ac7y9xjtdjh4kuyqa7zs7x43n7s76uxfztkfjdzjzw2jqsrxwxp7jw3nc2gq3hr5pmgts2amhp79rcua7mrl53d6vwr83ncqwmpmkrvxapltf7dqd50gydjf5zqtfd2trnwrvydkshtrrk6ky350fepvusyy7qg4sn7u8d0t763h32l9lumn59j79gkxeygnzkzdnh2qqzt7vvhvw23jn2krnzhy56jk689cchwgwypu022hska42g4teya94fdkzcn5gn37uzphuwmyv5qspkal69w823dqvrvdr0e73d6ukknkf2z4lcp4de3vphhtxpkmcxkyvtjgh9nuc3u9pdh4ssldzz94qqq0wkxpm37xvrlj95pl39mt44jmftgsy3mygalfv60kf0vn9urzs0vfzqh9ryvmx9es85q67j4spszxue89ss80dwn49ha2k22vzzkq9xyahggg6qzk4c3lwshlac9gg9nvg2h9hht6x8nhj8yjfa2ka9qpd5wm93tpes0laux7e83dej8gjf6vy9mjx5a3d042w2dszv2gk0ccx82lcw8wj44zwc9d0wjkl3zqk5rtlr0dezglvcvslzcc3ag6y993nettxn9vqfpnzsqcx8tg2n65l0s726adw3ltfwml9eev26luq4v85wedlfduqlr6057f03zfzlau3qvlc42ta8mwxxlt6qhl33m73h22sfwrfktluwngamfgepezszdwa68w4aruwt46kv3nv09c4ldvkz4s8t4jqdw92ky5uqpr78uyn5v3szqqqqqqqq0k0wzw",
+          "certificate1qyqsqqqqqqqqqqq2sn49gqptnw7egm6duhyqtghf386lageraqgst0g70v7k8swqz45usgm9amavzeg3f6r3p0kk9qqqqvumx0s"
+        ]
+      ],
+      [
+        "get_order_info",
+        [
+          "verifier1qysqqqqqqqqqqqr0nvqqqqqqqqqxmxcqqqqqqqqq8dsqzqqqqqqqqcwxqyqqqqqqqrdakqqqqqqqqqqvqqqqqqqqqqq2fhvn2nx2rxje00unx0mzgzyf60vuetgwdwadltfzcewy62kyw4yc8tav5s6zlp2n483ghggm9evq0mmhdn90ryn7nk69rv9yzl466zer3mt9g036yx8n8qx45p95x6x0ts66kchg552kx40ez9dfkzscpr79paslvmytdammh0tte0t3upaz5h4gc8xqvakmgduv9nrshvsxkdc076yeqv5zscms6tngc0tfqpsqlez0ca5ddqu76l6jdckjss2d8g83vp3j74j00epyw0e2x0jnah9elp2yl5v983vq3sk7r0smdq9ur7jzcl520h5jqq4dvn52sz4u5xaj9manst9h6343mps5ecfmr7gmnyw32eue5fyvj2kk0pshnkqghu4x9lzaghdxsyrmgttj7p3zxueef7fguf2ylp2urru8arw80a2maldxc8mnfxa8lnq63l4qzu5qagckryxxfr22msaahvncyerqgr8rzug55umghqc7d2x6dpywfpaghzsmmkpsqdcjve08p5s0sugcrvgwh9663ekeah8yu9hg9wm7q0ke0z048q8ul9ksvtgq0s5ql2588xf3ur6sfhaa4sum9xhm033jqp637wcz7gwvvlccheyqs9rknvnrjghznes4rpehp5wqnxp5mqpvm0hermntq73at5s909xute5sgqg53c3x7rn4j9gem3dyffgeprw787mhs406e0gkq8gx8aadmvdmldya2fsmmywu4ngua663aweu4xqxcnn0s5k5ef9m6e0ce2pztfa70rfpt4rhnm0rt22f90pdh66dkwlll4xtswqyjggulwde2fhlsgypnq5gzh524yevcv0gyk252203kernqazg44u0jecy4lg06jpaf4hanz3dqx7lx7sc6hr6yqqr7x5gpns0yj6hgz6aq9zp985pyqttrw2t54mhuuvs8h86jfzn39xnjk7fanrsqqqqqqqqq9ega9q",
+          "certificate1qyqsqqqqqqqqqqqqgh9yh07d2m5spu255uy79lv4h7scu4frpewu2996fxuyc3dtf7njspp8erv6jgtd7894era7fkqsqzdneuv"
+        ]
+      ]
+    ],
+    "program_checksum": [
+      "187u8",
+      "34u8",
+      "112u8",
+      "213u8",
+      "94u8",
+      "190u8",
+      "170u8",
+      "67u8",
+      "192u8",
+      "7u8",
+      "178u8",
+      "161u8",
+      "21u8",
+      "109u8",
+      "116u8",
+      "66u8",
+      "246u8",
+      "195u8",
+      "86u8",
+      "101u8",
+      "255u8",
+      "34u8",
+      "51u8",
+      "181u8",
+      "65u8",
+      "145u8",
+      "141u8",
+      "248u8",
+      "198u8",
+      "208u8",
+      "222u8",
+      "189u8"
+    ],
+    "program_owner": "aleo1hjr3xkvwtkuafnmn8273vd7najxd00gmqseuccj2f50q2ep9dcyq8w8exf"
+  },
+  "fee": {
+    "transition": {
+      "id": "au1xsyuaq9g0hn39ll68henenemupapnktlyqjknxxkr34v6qdn7cxsw067w2",
+      "program": "credits.aleo",
+      "function": "fee_public",
+      "inputs": [
+        {
+          "type": "public",
+          "id": "5929180074348928938751467464920103684690676694398062152252954443298215247843field",
+          "value": "100000013524115u64"
+        },
+        {
+          "type": "public",
+          "id": "4030594806469678369777882291459804097372727726449871287632156297284925746176field",
+          "value": "0u64"
+        },
+        {
+          "type": "public",
+          "id": "7861867880810118626925245945957597545362802204160816417184977057008793925916field",
+          "value": "1277771895645771485693783986067136954160141541495415657497125256714347387303field"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "future",
+          "id": "4173048434564117106545836458560253467016730361400881249322195843798488427855field",
+          "value": "{\n  program_id: credits.aleo,\n  function_name: fee_public,\n  arguments: [\n    aleo1hjr3xkvwtkuafnmn8273vd7najxd00gmqseuccj2f50q2ep9dcyq8w8exf,\n    100000013524115u64\n  ]\n}"
+        }
+      ],
+      "tpk": "4081371421162134030294560109601192001657067393263592466367009636147033411090group",
+      "tcm": "5454348748177612144663875608524203936471217610561533274456551390977203569512field",
+      "scm": "4363162632644791687229167592402267610078900945885891123116296739276242755442field"
+    },
+    "global_state_root": "sr1e97hhnnznjpl67ewnjaj2mtk3m8uyvxvl22d9rezapxmgrat9v8su2qfap",
+    "proof": "proof1qyqsqqqqqqqqqqqpqqqqqqqqqqqyhln5ckvfcrmtcgmggjhura3nqenxljcuwxkjrnpz2nvxtay4cg0taun6anpewgs90w7kk67wfysqqyfa3xxcgtrh7ljcgu88kn7q42nytuk4j4yavkahpj8xw6n0hcdsnvqrjz2999rrgrnkr74eu285dq280q4a7gdhzz8z0j688hqs5lny5jla67s4qjyrmxw23v244a80vyylqy728tyc0htpvp95lvtpd6qnjunp0rm0vnksjytaupg2u5rrcqsryrezfd0ynwvdn9zg53lve755exy9lxlatrer7svne0jrv2qqt586jat3j8pykg47u2admgk3nttts667pqrvjpa2jtvm2476cunk6xgjke6axpsg8zzqz2whzurqz2jnq9sexzd7wx3qev8j22p3ku5ycmprc63hmdmy0cgn339cl6n4apa6k6flgwd2zxexms8kw5stsx4jas7ujch83lxt6c5hp85nfwcw5ukx06ck2chperprcqvf89gr9x0d3qa69acf6m4vmtvype7zrqqe2v8ec4wcgusqafjzznmj0ck42rjmz429m3gccyq5xm5s402n5amf2nkgrgz2kge5ev6xx3elfsqm876z7cy5e6tv7g2703near2wy55dv6hd32ek23pg0dhernq7k82ace8x42gsz92erjltyt8ckyupcn9hmsfsg48urfzjx4lvj6df7l3r56q0htfg9gnfj6x00ntk7gy4rm9hk2tjeelqeuzpx4d6zgys0afpedy4lscjk9nwv8x64fj9xyv4etclg4963runlzy6cw5lpvyh23quh5zgynuf9nwa0x3d8k2fp7qlnd3lqg5pfdfwkspm6hpnyl6rgd2cclkd8mgpun6k02293ewsh5lsvfwrh7tt3xwcakwknsc6gp8s4q9p93x9c79zl4qjd9z5z3gj0x8g2sul23q0eyd6s9gmu3sawprtpnca9535auazuunv7ky89qfzk2687z9fnsm0vftuxj8a4cazggzgdusyykr0e3kk49yg0evuyrhcgxl82sggfc3x7u0u8vwy5ep93jy4lp3hufqgpusjpyg3h4r2qlly3qmrm37pp9apa9rh0xxrafctynhpj5efhvv0pctg73fg24uq3h0c78qxyl7kwn6n3en057jfa8dctnamqvx63qq8c58gaypkaaswqvqqqqqqqqqqqyjs8jeqa0vvelwn3pw9rv5uk5g70td8rmh7hkr6l3t6s9ezzje5fkxj4w8cd5h4cu4wqfvskfcgqyqq5j7c8ndn5pqqpe24cjgedrwlh0x40avma800tax4jmeljgkj8heteuujk4pk20h0e90y4s40q3qqqypflhmas356n7d822rnassex32g4ldwjsqr6uw6cfw7vhk47maqlxjkftlgg5prjhd5g5wftt2833gwpecal68v23xnhprd5hedt606efunmns4q6hkj443xqj70tvlsyqqn7yfsl"
+  }
+}
