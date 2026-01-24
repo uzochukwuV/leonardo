@@ -4,7 +4,7 @@
 
 import token_registry.aleo;
 
-program sl.aleo {
+program private_orderbook_v1.aleo {
     // ========== CONSTANTS ==========
 
     // Tick size in basis points (100 = 0.01 = 1 cent for prices around $1-10)
@@ -29,6 +29,15 @@ program sl.aleo {
         token_id: field,
         external_authorization_required: bool,
         authorized_until: u32,
+    }
+
+    // Token pair configuration
+    struct TokenPair {
+        pair_id: u64,
+        base_token_id: field,    // e.g., ALEO token ID
+        quote_token_id: field,   // e.g., USDC token ID
+        tick_size: u64,          // Price increment in basis points
+        active: bool,            // Whether this pair is enabled for trading
     }
 
     // Record representing a private order with escrowed tokens
@@ -77,6 +86,9 @@ program sl.aleo {
     }
 
     // ========== MAPPINGS (Global State) ==========
+
+    // Maps pair_id to TokenPair configuration
+    mapping token_pairs: u64 => TokenPair;
 
     // Maps tick_key (hash of token_pair + tick_id) to TickInfo
     mapping tick_registry: field => TickInfo;
@@ -136,10 +148,92 @@ program sl.aleo {
         }
     }
 
+    // ========== ADMIN TRANSITIONS ==========
+
+    // Register a new token pair for trading
+    async transition register_token_pair(
+        public pair_id: u64,
+        public base_token_id: field,
+        public quote_token_id: field,
+        public tick_size: u64
+    ) -> Future {
+        // Validate inputs
+        assert(pair_id > 0u64);
+        assert(base_token_id != quote_token_id);
+        assert(tick_size > 0u64);
+
+        return finalize_register_pair(pair_id, base_token_id, quote_token_id, tick_size);
+    }
+
+    async function finalize_register_pair(
+        pair_id: u64,
+        base_token_id: field,
+        quote_token_id: field,
+        tick_size: u64
+    ) {
+        // Create pair struct
+        let pair: TokenPair = TokenPair {
+            pair_id,
+            base_token_id,
+            quote_token_id,
+            tick_size,
+            active: true,
+        };
+
+        // Store in mapping
+        Mapping::set(token_pairs, pair_id, pair);
+    }
+
+    // Deactivate a token pair (disable trading)
+    async transition deactivate_token_pair(
+        public pair_id: u64
+    ) -> Future {
+        return finalize_deactivate_pair(pair_id);
+    }
+
+    async function finalize_deactivate_pair(pair_id: u64) {
+        // Get existing pair
+        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
+
+        // Update to inactive
+        let updated_pair: TokenPair = TokenPair {
+            pair_id: pair.pair_id,
+            base_token_id: pair.base_token_id,
+            quote_token_id: pair.quote_token_id,
+            tick_size: pair.tick_size,
+            active: false,
+        };
+
+        Mapping::set(token_pairs, pair_id, updated_pair);
+    }
+
+    // Reactivate a token pair
+    async transition reactivate_token_pair(
+        public pair_id: u64
+    ) -> Future {
+        return finalize_reactivate_pair(pair_id);
+    }
+
+    async function finalize_reactivate_pair(pair_id: u64) {
+        // Get existing pair
+        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
+
+        // Update to active
+        let updated_pair: TokenPair = TokenPair {
+            pair_id: pair.pair_id,
+            base_token_id: pair.base_token_id,
+            quote_token_id: pair.quote_token_id,
+            tick_size: pair.tick_size,
+            active: true,
+        };
+
+        Mapping::set(token_pairs, pair_id, updated_pair);
+    }
+
     // ========== CORE TRANSITIONS ==========
 
     // Submit a new tick-based order with token escrow
-    transition submit_tick_order_with_escrow(
+    async transition submit_tick_order_with_escrow(
         public token_pair: u64,
         public is_buy: bool,
         public tick_lower: u64,
@@ -148,7 +242,7 @@ program sl.aleo {
         limit_price: u64,           // Private: exact price
         quantity: u64,              // Private: order size
         escrow_token: Token         // Token to escrow
-    ) -> (TickOrder, Token) {
+    ) -> (TickOrder, Token, Future) {
 
         // 1. Validate tick range
         let range_width: u64 = tick_upper - tick_lower;
@@ -194,11 +288,30 @@ program sl.aleo {
             authorized_until: escrow_token.authorized_until,
         };
 
-        return (order, change);
+        return (order, change, finalize_submit_escrow(token_pair, escrow_token.token_id, is_buy));
+    }
+
+    async function finalize_submit_escrow(
+        token_pair: u64,
+        token_id: field,
+        is_buy: bool
+    ) {
+        // Validate token pair exists and is active
+        let pair: TokenPair = Mapping::get(token_pairs, token_pair);
+        assert(pair.active);
+
+        // Verify correct token is being escrowed
+        if is_buy {
+            // Buy orders must escrow quote token
+            assert(token_id == pair.quote_token_id);
+        } else {
+            // Sell orders must escrow base token
+            assert(token_id == pair.base_token_id);
+        }
     }
 
     // Submit order without escrow (for testing/demo)
-    transition submit_tick_order(
+    async transition submit_tick_order(
         public token_pair: u64,
         public is_buy: bool,
         public tick_lower: u64,
@@ -206,7 +319,7 @@ program sl.aleo {
         public timestamp: u32,
         limit_price: u64,
         quantity: u64
-    ) -> TickOrder {
+    ) -> (TickOrder, Future) {
 
         // 1. Validate tick range
         let range_width: u64 = tick_upper - tick_lower;
@@ -236,7 +349,42 @@ program sl.aleo {
             timestamp,
         };
 
-        return order;
+        return (order, finalize_submit_order(token_pair, tick_lower, tick_upper));
+    }
+
+    async function finalize_submit_order(
+        token_pair: u64,
+        tick_lower: u64,
+        tick_upper: u64
+    ) {
+        // Validate token pair exists and is active
+        let pair: TokenPair = Mapping::get(token_pairs, token_pair);
+        assert(pair.active);
+
+        // Update tick registry - just increment the midpoint tick for simplicity
+        // In production, matcher will track actual tick ranges
+        let mid_tick: u64 = (tick_lower + tick_upper) / 2u64;
+        let tick_key: field = get_tick_key(token_pair, mid_tick);
+
+        // Get existing tick info or create new one
+        let existing: TickInfo = Mapping::get_or_use(tick_registry, tick_key, TickInfo {
+            token_pair,
+            tick_id: mid_tick,
+            order_count: 0u32,
+            total_volume_settled: 0u64,
+            last_updated: 0u32,
+        });
+
+        // Increment order count
+        let updated: TickInfo = TickInfo {
+            token_pair: existing.token_pair,
+            tick_id: existing.tick_id,
+            order_count: existing.order_count + 1u32,
+            total_volume_settled: existing.total_volume_settled,
+            last_updated: existing.last_updated,
+        };
+
+        Mapping::set(tick_registry, tick_key, updated);
     }
 
     // Update an existing order (modify price or quantity)

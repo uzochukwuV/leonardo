@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useAleo } from '@/hooks/use-aleo';
+import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
 import { Button } from '@/components/ui/button';
 import { X, TrendingUp, TrendingDown } from 'lucide-react';
 
@@ -55,7 +55,7 @@ const MOCK_ORDERS: Order[] = [
 ];
 
 export function UserOrders() {
-  const { connected, account } = useAleo();
+  const { connected } = useWallet();
   const [orders, setOrders] = useState<Order[]>(MOCK_ORDERS);
   const [cancelling, setCancelling] = useState<string | null>(null);
 

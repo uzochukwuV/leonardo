@@ -1,8 +1,6 @@
 'use client';
 
 import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, XCircle } from 'lucide-react';
 
 /**
@@ -14,43 +12,39 @@ export function WalletInfo() {
 
   if (!connected || !publicKey) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <XCircle className="h-5 w-5 text-destructive" />
-            Wallet Not Connected
-          </CardTitle>
-          <CardDescription>
-            Connect your Aleo wallet to start trading
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="rounded-lg border border-border bg-card p-6">
+        <div className="flex items-center gap-2 mb-2">
+          <XCircle className="h-5 w-5 text-destructive" />
+          <h3 className="text-lg font-bold text-foreground">Wallet Not Connected</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Connect your Aleo wallet to start trading
+        </p>
+      </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <CheckCircle2 className="h-5 w-5 text-green-500" />
-          Wallet Connected
-        </CardTitle>
-        <CardDescription>
-          {wallet?.adapter.name || 'Unknown Wallet'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2">
+    <div className="rounded-lg border border-border bg-card p-6">
+      <div className="flex items-center gap-2 mb-2">
+        <CheckCircle2 className="h-5 w-5 text-green-500" />
+        <h3 className="text-lg font-bold text-foreground">Wallet Connected</h3>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">
+        {wallet?.adapter.name || 'Unknown Wallet'}
+      </p>
+      <div className="space-y-3">
         <div>
-          <p className="text-sm font-medium">Public Key</p>
-          <code className="text-xs bg-muted p-2 rounded block mt-1 break-all">
+          <p className="text-sm font-medium text-foreground">Public Key</p>
+          <code className="text-xs bg-muted p-2 rounded block mt-1 break-all font-mono">
             {publicKey}
           </code>
         </div>
         <div className="flex gap-2">
-          <Badge variant="outline">Testnet</Badge>
-          <Badge variant="default">Active</Badge>
+          <span className="text-xs px-2 py-1 rounded border border-border bg-background">Testnet</span>
+          <span className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground">Active</span>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

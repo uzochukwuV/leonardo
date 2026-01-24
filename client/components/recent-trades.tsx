@@ -1,10 +1,27 @@
 'use client';
 
+import { useState } from 'react';
+import { useOrderBookData } from '@/hooks/use-order-book-data';
 import { useOrderBook, type RecentTrade } from '@/hooks/use-order-book';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Database } from 'lucide-react';
+import { config } from '@/lib/config';
 
 export function RecentTrades() {
-  const { recentTrades } = useOrderBook();
+  const [selectedPairId] = useState(config.DEFAULT_TOKEN_PAIR);
+
+  // Try real data first
+  const {
+    recentTrades: realTrades,
+    loading: realLoading,
+  } = useOrderBookData(selectedPairId);
+
+  // Fallback to mock data
+  const { recentTrades: mockTrades } = useOrderBook();
+
+  // Use real data if available, otherwise mock
+  const hasRealData = realTrades.length > 0;
+  const recentTrades = hasRealData ? realTrades : mockTrades;
+  const isUsingMockData = !hasRealData;
 
   const formatTime = (timestamp: number) => {
     const mins = Math.floor((Date.now() - timestamp) / 60000);
@@ -15,9 +32,15 @@ export function RecentTrades() {
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
-      <h2 className="text-base sm:text-lg font-bold text-foreground mb-6">
-        Recent Trades (Public)
-      </h2>
+      <div className="flex items-center gap-2 mb-6">
+        <h2 className="text-base sm:text-lg font-bold text-foreground">
+          Recent Trades (Public)
+        </h2>
+        <span className={`text-xs px-2 py-1 rounded ${isUsingMockData ? 'bg-amber-500/20 text-amber-600' : 'bg-green-500/20 text-green-600'}`}>
+          <Database className="w-3 h-3 inline mr-1" />
+          {isUsingMockData ? 'Demo' : 'Live'}
+        </span>
+      </div>
 
       {recentTrades.length === 0 ? (
         <div className="text-center py-8">

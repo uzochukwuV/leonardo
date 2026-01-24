@@ -1,12 +1,44 @@
 'use client';
 
+import { useState } from 'react';
+import { useOrderBookData, type TickDisplayInfo } from '@/hooks/use-order-book-data';
 import { useOrderBook, type TickInfo } from '@/hooks/use-order-book';
 import { Button } from '@/components/ui/button';
-import { RotateCw } from 'lucide-react';
+import { RotateCw, AlertCircle, Database } from 'lucide-react';
+import { config } from '@/lib/config';
 
 export function OrderBookDisplay() {
-  const { orderBook, lastPrice, volume24h, loading, refreshOrderBook } =
-    useOrderBook();
+  const [selectedPairId] = useState(config.DEFAULT_TOKEN_PAIR);
+  const [useRealData, setUseRealData] = useState(true);
+
+  // Try to fetch real blockchain data
+  const {
+    orderBook: realOrderBook,
+    lastPrice: realLastPrice,
+    volume24h: realVolume24h,
+    loading: realLoading,
+    error: realError,
+    refreshOrderBook: realRefresh,
+  } = useOrderBookData(selectedPairId);
+
+  // Fallback to mock data
+  const {
+    orderBook: mockOrderBook,
+    lastPrice: mockLastPrice,
+    volume24h: mockVolume24h,
+    loading: mockLoading,
+    refreshOrderBook: mockRefresh,
+  } = useOrderBook();
+
+  // Determine which data to use
+  const hasRealData = Object.keys(realOrderBook).length > 0;
+  const shouldUseMock = !useRealData || (!realLoading && !hasRealData);
+
+  const orderBook = shouldUseMock ? mockOrderBook : realOrderBook;
+  const lastPrice = shouldUseMock ? mockLastPrice : realLastPrice;
+  const volume24h = shouldUseMock ? mockVolume24h : realVolume24h;
+  const loading = shouldUseMock ? mockLoading : realLoading;
+  const refreshOrderBook = shouldUseMock ? mockRefresh : realRefresh;
 
   // Sort ticks by price
   const sortedTicks = Object.values(orderBook).sort(
@@ -26,9 +58,15 @@ export function OrderBookDisplay() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-base sm:text-lg font-bold text-foreground">
-            Order Book
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base sm:text-lg font-bold text-foreground">
+              Order Book
+            </h2>
+            <span className={`text-xs px-2 py-1 rounded ${shouldUseMock ? 'bg-amber-500/20 text-amber-600' : 'bg-green-500/20 text-green-600'}`}>
+              <Database className="w-3 h-3 inline mr-1" />
+              {shouldUseMock ? 'Demo Data' : 'Live'}
+            </span>
+          </div>
           <p className="text-xs text-muted-foreground mt-1">
             Tick-aggregated liquidity (ALEO/USDC)
           </p>
@@ -40,10 +78,31 @@ export function OrderBookDisplay() {
           variant="outline"
           className="gap-2 bg-transparent"
         >
-          <RotateCw className="w-4 h-4" />
+          <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           {loading ? 'Updating...' : 'Refresh'}
         </Button>
       </div>
+
+      {/* Error Alert */}
+      {realError && !shouldUseMock && (
+        <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/30 flex gap-2">
+          <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm text-destructive font-semibold">Failed to fetch on-chain data</p>
+            <p className="text-xs text-destructive/80 mt-1">{realError}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Info for demo mode */}
+      {shouldUseMock && !realLoading && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-900/80">
+            Showing demo data. Real order book will appear once orders are submitted on-chain.
+          </p>
+        </div>
+      )}
 
       {/* Market Info Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6 pb-4 border-b border-border">

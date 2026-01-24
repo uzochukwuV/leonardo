@@ -1,6 +1,6 @@
 import credits.aleo;
 import token_registry.aleo;
-program sl.aleo;
+program private_orderbook_v1.aleo;
 
 record Token:
     owner as address.private;
@@ -30,6 +30,13 @@ record Settlement:
     is_buy as boolean.private;
     timestamp as u32.private;
 
+struct TokenPair:
+    pair_id as u64;
+    base_token_id as field;
+    quote_token_id as field;
+    tick_size as u64;
+    active as boolean;
+
 struct TickInfo:
     token_pair as u64;
     tick_id as u64;
@@ -52,6 +59,10 @@ struct TokenOwner:
     account as address;
     token_id as field;
 
+mapping token_pairs:
+    key as u64.public;
+    value as TokenPair.public;
+
 mapping tick_registry:
     key as field.public;
     value as TickInfo.public;
@@ -63,6 +74,50 @@ mapping order_fills:
 mapping tick_volumes:
     key as field.public;
     value as u64.public;
+
+function register_token_pair:
+    input r0 as u64.public;
+    input r1 as field.public;
+    input r2 as field.public;
+    input r3 as u64.public;
+    gt r0 0u64 into r4;
+    assert.eq r4 true;
+    is.neq r1 r2 into r5;
+    assert.eq r5 true;
+    gt r3 0u64 into r6;
+    assert.eq r6 true;
+    async register_token_pair r0 r1 r2 r3 into r7;
+    output r7 as private_orderbook_v1.aleo/register_token_pair.future;
+
+finalize register_token_pair:
+    input r0 as u64.public;
+    input r1 as field.public;
+    input r2 as field.public;
+    input r3 as u64.public;
+    cast r0 r1 r2 r3 true into r4 as TokenPair;
+    set r4 into token_pairs[r0];
+
+function deactivate_token_pair:
+    input r0 as u64.public;
+    async deactivate_token_pair r0 into r1;
+    output r1 as private_orderbook_v1.aleo/deactivate_token_pair.future;
+
+finalize deactivate_token_pair:
+    input r0 as u64.public;
+    get token_pairs[r0] into r1;
+    cast r1.pair_id r1.base_token_id r1.quote_token_id r1.tick_size false into r2 as TokenPair;
+    set r2 into token_pairs[r0];
+
+function reactivate_token_pair:
+    input r0 as u64.public;
+    async reactivate_token_pair r0 into r1;
+    output r1 as private_orderbook_v1.aleo/reactivate_token_pair.future;
+
+finalize reactivate_token_pair:
+    input r0 as u64.public;
+    get token_pairs[r0] into r1;
+    cast r1.pair_id r1.base_token_id r1.quote_token_id r1.tick_size true into r2 as TokenPair;
+    set r2 into token_pairs[r0];
 
 function submit_tick_order_with_escrow:
     input r0 as u64.public;
@@ -95,8 +150,25 @@ function submit_tick_order_with_escrow:
     cast self.caller r0 r2 r3 r1 r6 r5 r7.token_id r18 0u64 r4 into r21 as TickOrder.record;
     sub r7.amount r18 into r22;
     cast self.caller r22 r7.token_id r7.external_authorization_required r7.authorized_until into r23 as Token.record;
+    async submit_tick_order_with_escrow r0 r7.token_id r1 into r24;
     output r21 as TickOrder.record;
     output r23 as Token.record;
+    output r24 as private_orderbook_v1.aleo/submit_tick_order_with_escrow.future;
+
+finalize submit_tick_order_with_escrow:
+    input r0 as u64.public;
+    input r1 as field.public;
+    input r2 as boolean.public;
+    get token_pairs[r0] into r3;
+    assert.eq r3.active true;
+    branch.eq r2 false to end_then_0_0;
+    is.eq r1 r3.quote_token_id into r4;
+    assert.eq r4 true;
+    branch.eq true true to end_otherwise_0_1;
+    position end_then_0_0;
+    is.eq r1 r3.base_token_id into r5;
+    assert.eq r5 true;
+    position end_otherwise_0_1;
 
 function submit_tick_order:
     input r0 as u64.public;
@@ -119,7 +191,26 @@ function submit_tick_order:
     gt r6 0u64 into r14;
     assert.eq r14 true;
     cast self.caller r0 r2 r3 r1 r6 r5 0field 0u64 0u64 r4 into r15 as TickOrder.record;
+    async submit_tick_order r0 r2 r3 into r16;
     output r15 as TickOrder.record;
+    output r16 as private_orderbook_v1.aleo/submit_tick_order.future;
+
+finalize submit_tick_order:
+    input r0 as u64.public;
+    input r1 as u64.public;
+    input r2 as u64.public;
+    get token_pairs[r0] into r3;
+    assert.eq r3.active true;
+    add r1 r2 into r4;
+    div r4 2u64 into r5;
+    mul r5 1000000u64 into r6;
+    add r0 r6 into r7;
+    hash.bhp256 r7 into r8 as field;
+    cast r0 r5 0u32 0u64 0u32 into r9 as TickInfo;
+    get.or_use tick_registry[r8] r9 into r10;
+    add r10.order_count 1u32 into r11;
+    cast r10.token_pair r10.tick_id r11 r10.total_volume_settled r10.last_updated into r12 as TickInfo;
+    set r12 into tick_registry[r8];
 
 function update_order:
     input r0 as TickOrder.record;

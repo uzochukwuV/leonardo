@@ -1,46 +1,46 @@
 'use client';
 
-import React from "react"
-
-import { useState } from 'react';
-import { useAleo } from '@/hooks/use-aleo';
-import { useOrderBook } from '@/hooks/use-order-book';
+import React, { useState } from 'react';
+import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
+import { WalletAdapterNetwork, Transaction } from '@demox-labs/aleo-wallet-adapter-base';
 import { Button } from '@/components/ui/button';
+import { TokenPairSelector } from '@/components/token-pair-selector';
+import { getTokenPair, priceToBasisPoints, priceToTick, calculateEscrowAmount } from '@/lib/token-pairs';
+import { config } from '@/lib/config';
 import { Lock, AlertCircle } from 'lucide-react';
 
-const TICK_SIZE = 0.01;
-const BASE_PRICE = 15.0;
-const MAX_TICK_RANGE = 0.5;
-
 export function OrderPlacementForm() {
-  const { account, connected, loading, executeTransaction } = useAleo();
-  const { updateTickOrderCount } = useOrderBook();
+  const { publicKey, connected, requestTransaction, wallet } = useWallet();
 
+  const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
-  const [limitPrice, setLimitPrice] = useState(BASE_PRICE.toString());
-  const [tickRangeWidth, setTickRangeWidth] = useState(
-    MAX_TICK_RANGE.toString()
-  );
+  const [limitPrice, setLimitPrice] = useState(config.BASE_PRICE.toString());
+  const [tickRangeWidth, setTickRangeWidth] = useState((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [txId, setTxId] = useState<string | null>(null);
+
+  const selectedPair = getTokenPair(selectedPairId);
+
+  if (!selectedPair) {
+    return <div>Invalid token pair</div>;
+  }
 
   // Calculate tick bounds based on limit price and range
-  const limit = parseFloat(limitPrice) || BASE_PRICE;
-  const rangeWidth = parseFloat(tickRangeWidth) || MAX_TICK_RANGE;
-  const tickLower = Math.max(
-    BASE_PRICE - rangeWidth / 2,
-    limit - rangeWidth / 2
-  );
+  const limit = parseFloat(limitPrice) || config.BASE_PRICE;
+  const rangeWidth = parseFloat(tickRangeWidth) || (config.MAX_TICK_RANGE * config.TICK_SIZE / 10000);
+  const tickLower = Math.max(selectedPair.minPrice / 10000, limit - rangeWidth / 2);
   const tickUpper = tickLower + rangeWidth;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(false);
+    setTxId(null);
 
-    if (!connected) {
+    if (!connected || !publicKey) {
       setError('Please connect your wallet first');
       return;
     }
@@ -66,26 +66,67 @@ export function OrderPlacementForm() {
 
       setSubmitting(true);
 
-      // Execute smart contract transition
-      await executeTransaction('submit_tick_order', {
-        token_pair: 'ALEO_USDC',
-        is_buy: side === 'buy',
-        tick_lower: Math.floor(tickLower / TICK_SIZE),
-        tick_upper: Math.ceil(tickUpper / TICK_SIZE),
-        limit_price: price,
-        quantity: qty,
+      // Convert to contract format
+      const tokenPairId = selectedPairId;
+      const isBuy = side === 'buy';
+      const tickLowerId = priceToTick(tickLower, selectedPair.tickSize);
+      const tickUpperId = priceToTick(tickUpper, selectedPair.tickSize);
+      const limitPriceBps = priceToBasisPoints(price);
+      const quantityRaw = Math.floor(qty * Math.pow(10, selectedPair.baseToken.decimals));
+      const escrowAmount = calculateEscrowAmount(isBuy, quantityRaw, limitPriceBps);
+
+      // Get current timestamp (in seconds, convert to u32)
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      // Create transaction inputs
+      const inputs = [
+        `${tokenPairId}u64`,           // token_pair_id
+        `${isBuy}`,                     // is_buy
+        `${tickLowerId}u64`,            // tick_lower
+        `${tickUpperId}u64`,            // tick_upper
+        `${timestamp}u32`,              // timestamp
+        `${limitPriceBps}u64`,          // limit_price
+        `${quantityRaw}u64`,            // quantity
+      ];
+
+      console.log('Submitting order:', {
+        tokenPairId,
+        isBuy,
+        tickLowerId,
+        tickUpperId,
+        limitPriceBps,
+        quantityRaw,
+        inputs,
       });
 
-      // Update order book
-      updateTickOrderCount(Math.floor(limit / TICK_SIZE));
+      // Create and submit transaction
+      const transaction = Transaction.createTransaction(
+        publicKey,
+        WalletAdapterNetwork.TestnetBeta,
+        config.CONTRACT_PROGRAM_ID,
+        'submit_tick_order',
+        inputs,
+        config.DEFAULT_FEE
+      );
+
+      if (!requestTransaction) {
+        throw new Error('Wallet does not support transaction requests');
+      }
+
+      const transactionId = await requestTransaction(transaction);
 
       setSuccess(true);
+      setTxId(transactionId);
       setQuantity('');
-      setLimitPrice(BASE_PRICE.toString());
-      setTickRangeWidth(MAX_TICK_RANGE.toString());
+      setLimitPrice(config.BASE_PRICE.toString());
+      setTickRangeWidth((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
 
-      setTimeout(() => setSuccess(false), 5000);
+      setTimeout(() => {
+        setSuccess(false);
+        setTxId(null);
+      }, 10000);
     } catch (err) {
+      console.error('Order submission error:', err);
       setError(err instanceof Error ? err.message : 'Failed to place order');
     } finally {
       setSubmitting(false);
@@ -108,6 +149,17 @@ export function OrderPlacementForm() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Token Pair Selection */}
+        <div>
+          <label className="block text-sm font-semibold text-foreground mb-3">
+            Token Pair
+          </label>
+          <TokenPairSelector
+            selectedPairId={selectedPairId}
+            onSelectPair={setSelectedPairId}
+          />
+        </div>
+
         {/* Side Selection */}
         <div>
           <label className="block text-sm font-semibold text-foreground mb-3">
@@ -178,7 +230,7 @@ export function OrderPlacementForm() {
             <input
               type="range"
               min="0.01"
-              max={MAX_TICK_RANGE}
+              max={(config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString()}
               step="0.01"
               value={tickRangeWidth}
               onChange={(e) => setTickRangeWidth(e.target.value)}
@@ -207,17 +259,16 @@ export function OrderPlacementForm() {
           <input
             type="number"
             step="0.01"
-            min="0"
-            max="1000"
+            min={(selectedPair.minPrice / 10000).toString()}
+            max={(selectedPair.maxPrice / 10000).toString()}
             value={limitPrice}
             onChange={(e) => setLimitPrice(e.target.value)}
             disabled={!connected}
-            placeholder="15.00"
+            placeholder={config.BASE_PRICE.toString()}
             className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
           />
           <p className="text-xs text-muted-foreground mt-2">
-            ${Math.abs(parseFloat(limitPrice) - BASE_PRICE).toFixed(4)} from
-            market
+            ${Math.abs(parseFloat(limitPrice) - config.BASE_PRICE).toFixed(4)} from market
           </p>
         </div>
 
@@ -245,7 +296,7 @@ export function OrderPlacementForm() {
           <p className="text-xs text-muted-foreground mt-2">
             Estimated value:{' '}
             <span className="font-mono font-bold text-accent">
-              ${(parseFloat(quantity) * parseFloat(limitPrice)).toFixed(2)}
+              ${(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)} {selectedPair.quoteToken.symbol}
             </span>
           </p>
         </div>
@@ -263,13 +314,18 @@ export function OrderPlacementForm() {
             <p className="text-sm text-primary font-semibold">
               Order placed successfully! Waiting for settlement.
             </p>
+            {txId && (
+              <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
+                TX: {txId}
+              </p>
+            )}
           </div>
         )}
 
         {/* Submit Button */}
         <Button
           type="submit"
-          disabled={!connected || submitting || loading}
+          disabled={!connected || submitting}
           className={`w-full py-3 font-semibold rounded-lg transition-all ${
             side === 'buy'
               ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
@@ -281,8 +337,8 @@ export function OrderPlacementForm() {
           ) : (
             <>
               {side === 'buy' ? 'Place Buy Order' : 'Place Sell Order'} •{' '}
-              {(parseFloat(quantity) * parseFloat(limitPrice)).toFixed(2)}{' '}
-              USDC
+              {(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)}{' '}
+              {selectedPair.quoteToken.symbol}
             </>
           )}
         </Button>
