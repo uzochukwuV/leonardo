@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useMemo, useState, useEffect } from 'react';
+import { ReactNode, useMemo } from 'react';
 import { WalletProvider as AleoWalletProvider } from '@demox-labs/aleo-wallet-adapter-react';
 import { WalletModalProvider } from '@demox-labs/aleo-wallet-adapter-reactui';
 import { LeoWalletAdapter } from '@demox-labs/aleo-wallet-adapter-leo';
@@ -9,35 +9,34 @@ import {
   WalletAdapterNetwork,
 } from '@demox-labs/aleo-wallet-adapter-base';
 
-// Import default wallet adapter styles
 import '@demox-labs/aleo-wallet-adapter-reactui/styles.css';
 
 /**
- * WalletProvider component wraps the app to manage Aleo wallet connection globally.
+ * WalletProvider wraps the app with Aleo wallet connection capabilities.
  *
  * Uses the official Aleo Wallet Adapter:
- * - Supports Leo Wallet and other Aleo-compatible wallets
+ * - Supports Leo Wallet (primary) and other Aleo-compatible wallets
  * - Provides wallet connection modal UI
  * - Handles signing, decryption, and transaction requests
  * - Auto-reconnects on page load if previously connected
+ *
+ * DecryptPermission.UponRequest means the wallet will prompt the user
+ * each time the dApp requests record decryption, providing better security.
  */
 export function WalletProvider({ children }: { children: ReactNode }) {
-  // Initialize wallet adapters
   const wallets = useMemo(
     () => [
       new LeoWalletAdapter({
-        appName: 'Aleo Order Book',
+        appName: 'Pteaker Order Book',
       }),
     ],
     []
   );
 
-  wallets[0].connect(DecryptPermission.NoDecrypt, WalletAdapterNetwork.TestnetBeta)
-
   return (
     <AleoWalletProvider
       wallets={wallets}
-      decryptPermission={DecryptPermission.NoDecrypt}
+      decryptPermission={DecryptPermission.UponRequest}
       network={WalletAdapterNetwork.TestnetBeta}
       autoConnect={true}
     >

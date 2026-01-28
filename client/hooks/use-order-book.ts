@@ -1,127 +1,179 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { aleoService } from '@/lib/aleo-service';
+import { config } from '@/lib/config';
+import { getTokenPair, tickToPrice } from '@/lib/token-pairs';
 
-export interface TickInfo {
+// --- Types ---
+
+export interface TickDisplayInfo {
   tickId: number;
   tickRange: { min: number; max: number };
+  buyOrderCount: number;
+  sellOrderCount: number;
   orderCount: number;
   volume: number;
-  lastUpdate: number;
-}
-
-export interface TickOrderBook {
-  [key: string]: TickInfo;
 }
 
 export interface RecentTrade {
   id: string;
-  timestamp: number;
+  side: 'buy' | 'sell';
   tickRange: { min: number; max: number };
   estimatedPrice: number;
-  side: 'buy' | 'sell';
+  timestamp: number;
 }
 
-const TICK_SIZE = 100; // 100 basis points
-const TOKEN_PAIR = 'ALEO/USDC';
-
-// Generate mock order book data
-function generateMockOrderBook(): TickOrderBook {
-  const book: TickOrderBook = {};
-  const basePrice = 1500; // $15.00
-
-  for (let i = -5; i <= 5; i++) {
-    const tickId = basePrice + i * TICK_SIZE;
-    const minPrice = tickId;
-    const maxPrice = tickId + TICK_SIZE;
-    const midpoint = (minPrice + maxPrice) / 2 / 100;
-
-    book[`tick_${tickId}`] = {
-      tickId,
-      tickRange: { min: midpoint - 0.05, max: midpoint + 0.05 },
-      orderCount: Math.floor(Math.random() * 8) + 1,
-      volume: Math.floor(Math.random() * 5000) + 500,
-      lastUpdate: Date.now(),
-    };
-  }
-
-  return book;
+export interface MarketStats {
+  lastPrice: number;
+  volume24h: number;
+  blockHeight: number;
+  pairActive: boolean;
 }
 
-function generateMockRecentTrades(): RecentTrade[] {
-  const trades: RecentTrade[] = [];
-  const basePrice = 1500;
+/**
+ * Primary order book hook.
+ * Queries the Aleo blockchain for token pair status and block height.
+ * Maintains local order book state populated from:
+ *  1. On-chain mapping queries (token pair status)
+ *  2. Local tracking of submitted orders
+ *  3. Block height polling for freshness
+ *
+ * Note: tick_registry mapping uses BHP256 hashed keys.
+ * A production deployment would use a backend indexer or @provablehq/wasm.
+ * Currently, the order book is populated from locally tracked orders.
+ */
+export function useOrderBook(tokenPairId: number = config.DEFAULT_TOKEN_PAIR) {
+  const [ticks, setTicks] = useState<Record<string, TickDisplayInfo>>({});
+  const [recentTrades, setRecentTrades] = useState<RecentTrade[]>([]);
+  const [stats, setStats] = useState<MarketStats>({
+    lastPrice: config.BASE_PRICE,
+    volume24h: 0,
+    blockHeight: 0,
+    pairActive: false,
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isLive, setIsLive] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  for (let i = 0; i < 5; i++) {
-    const tickOffset = Math.floor(Math.random() * 11) - 5;
-    const tickId = basePrice + tickOffset * TICK_SIZE;
-    const midpoint = (tickId + TICK_SIZE / 2) / 100;
+  const tokenPair = getTokenPair(tokenPairId);
+  const tickSize = tokenPair?.tickSize || config.TICK_SIZE;
 
-    trades.push({
-      id: `trade_${i}`,
-      timestamp: Date.now() - i * 300000, // Every 5 mins
-      tickRange: {
-        min: midpoint - 0.05,
-        max: midpoint + 0.05,
-      },
-      estimatedPrice: midpoint,
-      side: Math.random() > 0.5 ? 'buy' : 'sell',
-    });
-  }
+  /**
+   * Fetch on-chain data: token pair status, block height.
+   */
+  const fetchOnChainData = useCallback(async () => {
+    try {
+      setError(null);
 
-  return trades;
-}
+      const [pairData, blockHeight] = await Promise.all([
+        aleoService.getTokenPair(tokenPairId),
+        aleoService.getLatestBlockHeight(),
+      ]);
 
-export function useOrderBook() {
-  const [orderBook, setOrderBook] = useState<TickOrderBook>(() =>
-    generateMockOrderBook()
-  );
-  const [recentTrades, setRecentTrades] = useState<RecentTrade[]>(() =>
-    generateMockRecentTrades()
-  );
-  const [loading, setLoading] = useState(false);
-  const [lastPrice, setLastPrice] = useState(15.0);
-  const [volume24h, set24hVolume] = useState(125000);
+      const pairActive = pairData !== null && pairData.active;
 
-  // Refresh order book
+      setStats(prev => ({
+        ...prev,
+        blockHeight,
+        pairActive,
+      }));
+
+      setIsLive(blockHeight > 0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to fetch on-chain data';
+      setError(msg);
+      setIsLive(false);
+    }
+  }, [tokenPairId]);
+
+  /**
+   * Full refresh.
+   */
   const refreshOrderBook = useCallback(async () => {
     setLoading(true);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      setOrderBook(generateMockOrderBook());
+      await fetchOnChainData();
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchOnChainData]);
 
-  // Add new trade
+  /**
+   * Add a locally tracked order to the display.
+   */
+  const addLocalOrder = useCallback((order: {
+    tickLower: number;
+    tickUpper: number;
+    isBuy: boolean;
+  }) => {
+    setTicks(prev => {
+      const updated = { ...prev };
+      for (let tick = order.tickLower; tick < order.tickUpper; tick++) {
+        const key = `tick_${tick}`;
+        const existing = updated[key];
+        const priceMin = tickToPrice(tick, tickSize);
+        const priceMax = tickToPrice(tick + 1, tickSize);
+
+        if (existing) {
+          updated[key] = {
+            ...existing,
+            buyOrderCount: existing.buyOrderCount + (order.isBuy ? 1 : 0),
+            sellOrderCount: existing.sellOrderCount + (order.isBuy ? 0 : 1),
+            orderCount: existing.orderCount + 1,
+            volume: existing.volume + 500,
+          };
+        } else {
+          updated[key] = {
+            tickId: tick,
+            tickRange: { min: priceMin, max: priceMax },
+            buyOrderCount: order.isBuy ? 1 : 0,
+            sellOrderCount: order.isBuy ? 0 : 1,
+            orderCount: 1,
+            volume: 500,
+          };
+        }
+      }
+      return updated;
+    });
+  }, [tickSize]);
+
+  /**
+   * Add a trade to the recent trades list.
+   */
   const addTrade = useCallback((trade: RecentTrade) => {
-    setRecentTrades((prev) => [trade, ...prev.slice(0, 9)]);
-  }, []);
-
-  // Update tick order count (after successful order placement)
-  const updateTickOrderCount = useCallback((tickId: number) => {
-    const key = `tick_${tickId}`;
-    setOrderBook((prev) => ({
+    setRecentTrades(prev => [trade, ...prev.slice(0, 19)]);
+    setStats(prev => ({
       ...prev,
-      [key]: {
-        ...prev[key],
-        orderCount: (prev[key]?.orderCount || 0) + 1,
-        lastUpdate: Date.now(),
-      },
+      lastPrice: trade.estimatedPrice,
+      volume24h: prev.volume24h + 1000,
     }));
   }, []);
 
+  // --- Lifecycle ---
+
+  useEffect(() => {
+    refreshOrderBook();
+
+    intervalRef.current = setInterval(() => {
+      fetchOnChainData();
+    }, config.ORDER_BOOK_REFRESH_INTERVAL);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [refreshOrderBook, fetchOnChainData]);
+
   return {
-    orderBook,
+    ticks,
     recentTrades,
+    stats,
     loading,
-    lastPrice,
-    set24hVolume,
-    volume24h,
+    error,
+    isLive,
     refreshOrderBook,
+    addLocalOrder,
     addTrade,
-    updateTickOrderCount,
-    tokenPair: TOKEN_PAIR,
   };
 }

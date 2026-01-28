@@ -1,13 +1,20 @@
 /**
  * Aleo Blockchain Service
- * Handles querying the Aleo blockchain for order book data
+ * Handles querying the Aleo blockchain via the Provable REST API
  */
 
 import { config } from './config';
 
-const ALEO_TESTNET_API = 'https://api.explorer.aleo.org/v1/testnet';
+// --- Types ---
 
-export interface OnChainTickInfo {
+export interface TokenPairOnChain {
+  baseTokenId: string;
+  quoteTokenId: string;
+  tickSize: number;
+  active: boolean;
+}
+
+export interface TickInfo {
   tickId: number;
   tokenPairId: number;
   buyOrderCount: number;
@@ -15,279 +22,292 @@ export interface OnChainTickInfo {
   lastUpdateHeight: number;
 }
 
-export interface OnChainOrder {
-  orderId: string;
-  owner: string;
-  tokenPairId: number;
-  isBuy: boolean;
-  tickLower: number;
-  tickUpper: number;
-  quantity: number; // This will be encrypted/hashed on-chain
-  status: 'active' | 'filled' | 'cancelled';
-  createdAt: number;
+export interface TransactionStatus {
+  status: 'confirmed' | 'pending' | 'rejected' | 'not_found';
+  blockHeight?: number;
+  transactionId?: string;
 }
 
-export interface Settlement {
-  settlementId: string;
-  buyOrderId: string;
-  sellOrderId: string;
-  executionPrice: number; // In basis points
-  timestamp: number;
-  blockHeight: number;
+// --- Aleo value parsing helpers ---
+
+/**
+ * Parse an Aleo struct string returned by the REST API into a JS object.
+ * Example input: "{ base_token_id: 12345field, quote_token_id: 67890field, tick_size: 100u64, active: true }"
+ */
+function parseAleoStruct(raw: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!raw || typeof raw !== 'string') return result;
+
+  // Remove outer braces and whitespace
+  const inner = raw.replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
+  if (!inner) return result;
+
+  // Split by comma, then parse key: value
+  const entries = inner.split(',');
+  for (const entry of entries) {
+    const colonIdx = entry.indexOf(':');
+    if (colonIdx === -1) continue;
+    const key = entry.slice(0, colonIdx).trim();
+    const value = entry.slice(colonIdx + 1).trim();
+    result[key] = value;
+  }
+  return result;
 }
 
 /**
- * Aleo Service for querying blockchain data
+ * Strip Aleo type suffix from a value string.
+ * "100u64" -> 100, "true" -> true, "12345field" -> "12345field"
  */
-export class AleoService {
+function parseAleoValue(raw: string): string | number | boolean {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+
+  // Match numeric types: u8, u16, u32, u64, u128, i8, ..., i128
+  const numMatch = raw.match(/^(\d+)(u8|u16|u32|u64|u128|i8|i16|i32|i64|i128)$/);
+  if (numMatch) return parseInt(numMatch[1], 10);
+
+  return raw;
+}
+
+// --- API Client ---
+
+class AleoApiClient {
   private baseUrl: string;
   private programId: string;
 
-  constructor(network: 'testnet' | 'mainnet' = 'testnet') {
-    this.baseUrl = network === 'testnet'
-      ? ALEO_TESTNET_API
-      : 'https://api.explorer.aleo.org/v1/mainnet';
+  constructor() {
+    this.baseUrl = config.API_URL;
     this.programId = config.CONTRACT_PROGRAM_ID;
   }
 
   /**
-   * Get program mappings
-   * This fetches the on-chain state stored in program mappings
+   * Raw fetch with error handling and optional retry.
    */
-  async getMapping(mappingName: string): Promise<any> {
+  private async fetchApi(path: string, retries = 1): Promise<Response> {
+    const url = `${this.baseUrl}${path}`;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url, {
+          headers: { 'Accept': 'application/json' },
+        });
+        return response;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+    }
+
+    throw lastError || new Error(`Failed to fetch ${url}`);
+  }
+
+  // --- Mapping queries ---
+
+  /**
+   * Get a single mapping value by key.
+   * Returns the raw string value, or null if not found.
+   */
+  async getMappingValue(mappingName: string, key: string): Promise<string | null> {
     try {
-      const response = await fetch(
-        `${this.baseUrl}/program/${this.programId}/mapping/${mappingName}`
+      const response = await this.fetchApi(
+        `/program/${this.programId}/mapping/${mappingName}/${key}`
       );
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch mapping ${mappingName}: ${response.statusText}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error(`Error fetching mapping ${mappingName}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Get tick registry data for a specific token pair
-   * Fetches the tick_registry mapping which contains tick-level order counts
-   */
-  async getTickRegistry(tokenPairId: number): Promise<Map<number, OnChainTickInfo>> {
-    try {
-      const tickRegistry = await this.getMapping('tick_registry');
-
-      if (!tickRegistry) {
-        return new Map();
-      }
-
-      const ticks = new Map<number, OnChainTickInfo>();
-
-      // Parse the mapping entries
-      // The key format is: {token_pair_id}_{tick_id}
-      // The value contains: buy_count, sell_count, last_update_height
-      for (const [key, value] of Object.entries(tickRegistry)) {
-        const [pairId, tickId] = key.split('_').map(Number);
-
-        if (pairId === tokenPairId) {
-          ticks.set(tickId, {
-            tickId,
-            tokenPairId: pairId,
-            buyOrderCount: (value as any).buy_order_count || 0,
-            sellOrderCount: (value as any).sell_order_count || 0,
-            lastUpdateHeight: (value as any).last_update_height || 0,
-          });
-        }
-      }
-
-      return ticks;
-    } catch (error) {
-      console.error('Error fetching tick registry:', error);
-      return new Map();
-    }
-  }
-
-  /**
-   * Get recent settlements for a token pair
-   * This queries the settlements mapping to get trade history
-   */
-  async getRecentSettlements(tokenPairId: number, limit: number = 20): Promise<Settlement[]> {
-    try {
-      const settlements = await this.getMapping('settlements');
-
-      if (!settlements) {
-        return [];
-      }
-
-      const settlementList: Settlement[] = [];
-
-      for (const [key, value] of Object.entries(settlements)) {
-        const settlement = value as any;
-
-        if (settlement.token_pair_id === tokenPairId) {
-          settlementList.push({
-            settlementId: key,
-            buyOrderId: settlement.buy_order_id,
-            sellOrderId: settlement.sell_order_id,
-            executionPrice: settlement.execution_price,
-            timestamp: settlement.timestamp || Date.now(),
-            blockHeight: settlement.block_height || 0,
-          });
-        }
-      }
-
-      // Sort by timestamp descending and limit
-      return settlementList
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, limit);
-    } catch (error) {
-      console.error('Error fetching settlements:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Get program transitions (for tracking order submissions)
-   * This queries recent transactions to the program
-   */
-  async getProgramTransitions(limit: number = 50): Promise<any[]> {
-    try {
-      const response = await fetch(
-        `${this.baseUrl}/program/${this.programId}/transitions?limit=${limit}`
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch transitions: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      return data.transitions || [];
-    } catch (error) {
-      console.error('Error fetching program transitions:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Get order by ID
-   * Fetches a specific order from the orders mapping
-   */
-  async getOrder(orderId: string): Promise<OnChainOrder | null> {
-    try {
-      const orders = await this.getMapping('orders');
-
-      if (!orders || !orders[orderId]) {
+        if (response.status === 404) return null;
         return null;
       }
 
-      const order = orders[orderId];
-
-      return {
-        orderId,
-        owner: order.owner,
-        tokenPairId: order.token_pair_id,
-        isBuy: order.is_buy,
-        tickLower: order.tick_lower,
-        tickUpper: order.tick_upper,
-        quantity: order.quantity, // Note: This may be hashed/encrypted
-        status: order.status,
-        createdAt: order.created_at || Date.now(),
-      };
-    } catch (error) {
-      console.error(`Error fetching order ${orderId}:`, error);
+      const text = await response.text();
+      // The API returns the value as a JSON string (quoted) or null
+      try {
+        const parsed = JSON.parse(text);
+        return parsed !== null ? String(parsed) : null;
+      } catch {
+        return text || null;
+      }
+    } catch (err) {
+      console.error(`[AleoService] Error fetching mapping ${mappingName}/${key}:`, err);
       return null;
     }
   }
 
   /**
-   * Get user's orders
-   * Fetches all orders belonging to a specific address
+   * Get all mapping names for the program.
    */
-  async getUserOrders(userAddress: string): Promise<OnChainOrder[]> {
+  async getMappingNames(): Promise<string[]> {
     try {
-      const orders = await this.getMapping('orders');
-
-      if (!orders) {
-        return [];
-      }
-
-      const userOrders: OnChainOrder[] = [];
-
-      for (const [orderId, order] of Object.entries(orders)) {
-        const orderData = order as any;
-
-        if (orderData.owner === userAddress) {
-          userOrders.push({
-            orderId,
-            owner: orderData.owner,
-            tokenPairId: orderData.token_pair_id,
-            isBuy: orderData.is_buy,
-            tickLower: orderData.tick_lower,
-            tickUpper: orderData.tick_upper,
-            quantity: orderData.quantity,
-            status: orderData.status,
-            createdAt: orderData.created_at || Date.now(),
-          });
-        }
-      }
-
-      return userOrders.sort((a, b) => b.createdAt - a.createdAt);
-    } catch (error) {
-      console.error('Error fetching user orders:', error);
+      const response = await this.fetchApi(`/program/${this.programId}/mappings`);
+      if (!response.ok) return [];
+      return await response.json();
+    } catch (err) {
+      console.error('[AleoService] Error fetching mapping names:', err);
       return [];
     }
   }
 
+  // --- Token pair queries ---
+
   /**
-   * Get transaction status
-   * Check if a transaction has been confirmed
+   * Fetch a token pair from the on-chain registry.
    */
-  async getTransactionStatus(transactionId: string): Promise<'pending' | 'confirmed' | 'failed'> {
+  async getTokenPair(pairId: number): Promise<TokenPairOnChain | null> {
+    const raw = await this.getMappingValue('token_pairs', `${pairId}u64`);
+    if (!raw) return null;
+
+    const parsed = parseAleoStruct(raw);
+    return {
+      baseTokenId: parsed.base_token_id || '',
+      quoteTokenId: parsed.quote_token_id || '',
+      tickSize: typeof parseAleoValue(parsed.tick_size || '0') === 'number'
+        ? parseAleoValue(parsed.tick_size || '0') as number : 0,
+      active: parseAleoValue(parsed.active || 'false') === true,
+    };
+  }
+
+  /**
+   * Check if a token pair is registered and active.
+   */
+  async isTokenPairActive(pairId: number): Promise<boolean> {
+    const pair = await this.getTokenPair(pairId);
+    return pair !== null && pair.active;
+  }
+
+  // --- Tick registry queries ---
+
+  /**
+   * Fetch tick info for a specific tick key (field element).
+   * The tick_registry mapping is keyed by BHP256::hash_to_field(pair + tick_id * 1000000).
+   * Since we can't compute BHP256 in the browser without WASM, this method
+   * accepts a pre-computed field key.
+   */
+  async getTickInfo(tickKey: string): Promise<TickInfo | null> {
+    const raw = await this.getMappingValue('tick_registry', tickKey);
+    if (!raw) return null;
+
+    const parsed = parseAleoStruct(raw);
+    return {
+      tickId: parseAleoValue(parsed.tick_id || '0') as number,
+      tokenPairId: parseAleoValue(parsed.token_pair || '0') as number,
+      buyOrderCount: parseAleoValue(parsed.buy_order_count || '0') as number,
+      sellOrderCount: parseAleoValue(parsed.sell_order_count || '0') as number,
+      lastUpdateHeight: parseAleoValue(parsed.last_update_height || '0') as number,
+    };
+  }
+
+  /**
+   * Get tick volume for a specific tick key.
+   */
+  async getTickVolume(tickKey: string): Promise<number> {
+    const raw = await this.getMappingValue('tick_volumes', tickKey);
+    if (!raw) return 0;
+    const val = parseAleoValue(raw);
+    return typeof val === 'number' ? val : 0;
+  }
+
+  // --- Transaction queries ---
+
+  /**
+   * Get a transaction by ID.
+   */
+  async getTransaction(txId: string): Promise<Record<string, unknown> | null> {
     try {
-      const response = await fetch(
-        `${this.baseUrl}/transaction/${transactionId}`
-      );
-
-      if (!response.ok) {
-        return 'pending';
-      }
-
-      const data = await response.json();
-
-      if (data.status === 'accepted') {
-        return 'confirmed';
-      } else if (data.status === 'rejected') {
-        return 'failed';
-      }
-
-      return 'pending';
-    } catch (error) {
-      console.error(`Error fetching transaction status for ${transactionId}:`, error);
-      return 'pending';
+      const response = await this.fetchApi(`/transaction/${txId}`, 2);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (err) {
+      console.error(`[AleoService] Error fetching transaction ${txId}:`, err);
+      return null;
     }
   }
 
   /**
-   * Get latest block height
+   * Check transaction status by trying both confirmed and unconfirmed endpoints.
+   */
+  async getTransactionStatus(txId: string): Promise<TransactionStatus> {
+    try {
+      // Try confirmed first
+      const confirmedRes = await this.fetchApi(`/transaction/confirmed/${txId}`);
+      if (confirmedRes.ok) {
+        const data = await confirmedRes.json();
+        return {
+          status: 'confirmed',
+          transactionId: txId,
+          blockHeight: data?.block_height,
+        };
+      }
+
+      // Try unconfirmed (in mempool)
+      const unconfirmedRes = await this.fetchApi(`/transaction/unconfirmed/${txId}`);
+      if (unconfirmedRes.ok) {
+        return { status: 'pending', transactionId: txId };
+      }
+
+      // Not found at all - could be propagating
+      return { status: 'not_found', transactionId: txId };
+    } catch {
+      return { status: 'not_found', transactionId: txId };
+    }
+  }
+
+  // --- Block queries ---
+
+  /**
+   * Get the latest block height.
    */
   async getLatestBlockHeight(): Promise<number> {
     try {
-      const response = await fetch(`${this.baseUrl}/latest/height`);
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch latest block height');
-      }
-
-      const data = await response.json();
-      return data.height || 0;
-    } catch (error) {
-      console.error('Error fetching latest block height:', error);
+      const response = await this.fetchApi('/block/height/latest');
+      if (!response.ok) return 0;
+      const text = await response.text();
+      return parseInt(text, 10) || 0;
+    } catch (err) {
+      console.error('[AleoService] Error fetching latest block height:', err);
       return 0;
     }
   }
+
+  // --- Program queries ---
+
+  /**
+   * Get the program source code.
+   */
+  async getProgram(): Promise<string | null> {
+    try {
+      const response = await this.fetchApi(`/program/${this.programId}`);
+      if (!response.ok) return null;
+      return await response.text();
+    } catch {
+      return null;
+    }
+  }
+
+  // --- Helper: Explorer URL ---
+
+  /**
+   * Build an explorer URL for a transaction.
+   */
+  getExplorerTxUrl(txId: string): string {
+    return `${config.EXPLORER_URL}/transaction/${txId}`;
+  }
+
+  /**
+   * Build an explorer URL for an address.
+   */
+  getExplorerAddressUrl(address: string): string {
+    return `${config.EXPLORER_URL}/address/${address}`;
+  }
+
+  /**
+   * Build an explorer URL for the program.
+   */
+  getExplorerProgramUrl(): string {
+    return `${config.EXPLORER_URL}/program/${this.programId}`;
+  }
 }
 
-// Export singleton instance
-export const aleoService = new AleoService('testnet');
+// Export singleton
+export const aleoService = new AleoApiClient();

@@ -6,170 +6,258 @@ import {
   WalletAdapterNetwork,
   WalletNotConnectedError,
 } from '@demox-labs/aleo-wallet-adapter-base';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
+import { config } from '@/lib/config';
+import { buildSubmitOrderInputs, buildSubmitOrderWithEscrowInputs, monitorTransaction } from '@/lib/transaction-utils';
+import { parseOrderRecord, type OrderRecord } from '@/lib/aleo-contract';
+import type { TransactionStatus } from '@/lib/aleo-service';
+
+// --- Types ---
+
+export interface PendingTransaction {
+  txId: string;
+  type: 'submit_order' | 'cancel_order' | 'update_order';
+  status: TransactionStatus['status'];
+  submittedAt: number;
+}
 
 /**
- * Hook for common wallet operations
- * Provides helpers for:
- * - Submitting orders with token escrow
- * - Requesting settlements
- * - Checking balances
- * - Decrypting records
+ * Hook for all wallet-based operations against the order book contract.
+ * Uses the @demox-labs wallet adapter for transaction signing.
  */
 export function useWalletOperations() {
   const {
     publicKey,
+    connected,
     requestTransaction,
     requestRecords,
     decrypt,
     signMessage,
+    transactionStatus,
   } = useWallet();
 
-  /**
-   * Submit a tick order with token escrow
-   */
+  const [pendingTxs, setPendingTxs] = useState<PendingTransaction[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // --- Order submission ---
+
   const submitOrder = useCallback(
     async (params: {
-      tokenPair: number;
+      tokenPairId: number;
       isBuy: boolean;
       tickLower: number;
       tickUpper: number;
       limitPrice: number;
       quantity: number;
-      escrowToken: string; // Serialized token record
-    }) => {
+    }): Promise<string> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!requestTransaction) throw new Error('Wallet does not support transactions');
 
-      const { tokenPair, isBuy, tickLower, tickUpper, limitPrice, quantity, escrowToken } = params;
+      setLoading(true);
+      setError(null);
 
-      const inputs = [
-        `${tokenPair}u64`,
-        isBuy ? 'true' : 'false',
-        `${tickLower}u64`,
-        `${tickUpper}u64`,
-        `${Math.floor(Date.now() / 1000)}u32`,
-        `${limitPrice}u64`,
-        `${quantity}u64`,
-        escrowToken,
-      ];
+      try {
+        const inputs = buildSubmitOrderInputs(params);
 
-      const fee = 100_000; // 0.1 credits
+        const transaction = Transaction.createTransaction(
+          publicKey,
+          WalletAdapterNetwork.TestnetBeta,
+          config.CONTRACT_PROGRAM_ID,
+          'submit_tick_order',
+          inputs,
+          config.DEFAULT_FEE
+        );
 
-      const transaction = Transaction.createTransaction(
-        publicKey,
-        WalletAdapterNetwork.Testnet,
-        'sl.aleo',
-        'submit_tick_order_with_escrow',
-        inputs,
-        fee
-      );
+        const txId = await requestTransaction(transaction);
 
-      const txId = await requestTransaction(transaction);
-      return txId;
+        const pendingTx: PendingTransaction = {
+          txId,
+          type: 'submit_order',
+          status: 'pending',
+          submittedAt: Date.now(),
+        };
+        setPendingTxs(prev => [pendingTx, ...prev]);
+
+        monitorTransaction(txId, (status) => {
+          setPendingTxs(prev =>
+            prev.map(tx => tx.txId === txId ? { ...tx, status: status.status } : tx)
+          );
+        });
+
+        return txId;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Order submission failed';
+        setError(msg);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
     },
     [publicKey, requestTransaction]
   );
 
-  /**
-   * Update an existing order
-   */
-  const updateOrder = useCallback(
+  const submitOrderWithEscrow = useCallback(
     async (params: {
-      oldOrderRecord: string;
-      newTickLower: number;
-      newTickUpper: number;
-      newLimitPrice: number;
-      newQuantity: number;
-    }) => {
+      tokenPairId: number;
+      isBuy: boolean;
+      tickLower: number;
+      tickUpper: number;
+      limitPrice: number;
+      quantity: number;
+      escrowTokenRecord: string;
+    }): Promise<string> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!requestTransaction) throw new Error('Wallet does not support transactions');
 
-      const { oldOrderRecord, newTickLower, newTickUpper, newLimitPrice, newQuantity } = params;
+      setLoading(true);
+      setError(null);
 
-      const inputs = [
-        oldOrderRecord,
-        `${newTickLower}u64`,
-        `${newTickUpper}u64`,
-        `${newLimitPrice}u64`,
-        `${newQuantity}u64`,
-      ];
+      try {
+        const inputs = buildSubmitOrderWithEscrowInputs(params);
 
-      const fee = 50_000;
+        const transaction = Transaction.createTransaction(
+          publicKey,
+          WalletAdapterNetwork.TestnetBeta,
+          config.CONTRACT_PROGRAM_ID,
+          'submit_tick_order_with_escrow',
+          inputs,
+          config.DEFAULT_FEE
+        );
 
-      const transaction = Transaction.createTransaction(
-        publicKey,
-        WalletAdapterNetwork.Testnet,
-        'sl.aleo',
-        'update_order',
-        inputs,
-        fee
-      );
+        const txId = await requestTransaction(transaction);
 
-      return await requestTransaction(transaction);
+        setPendingTxs(prev => [{
+          txId,
+          type: 'submit_order',
+          status: 'pending',
+          submittedAt: Date.now(),
+        }, ...prev]);
+
+        monitorTransaction(txId, (status) => {
+          setPendingTxs(prev =>
+            prev.map(tx => tx.txId === txId ? { ...tx, status: status.status } : tx)
+          );
+        });
+
+        return txId;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Order submission failed';
+        setError(msg);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
     },
     [publicKey, requestTransaction]
   );
 
-  /**
-   * Cancel an order and get refund
-   */
+  // --- Order cancellation ---
+
   const cancelOrder = useCallback(
-    async (orderRecord: string) => {
+    async (orderRecord: string): Promise<string> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!requestTransaction) throw new Error('Wallet does not support transactions');
 
-      const inputs = [orderRecord];
-      const fee = 50_000;
+      setLoading(true);
+      setError(null);
 
-      const transaction = Transaction.createTransaction(
-        publicKey,
-        WalletAdapterNetwork.Testnet,
-        'sl.aleo',
-        'cancel_order_with_refund',
-        inputs,
-        fee
-      );
+      try {
+        const transaction = Transaction.createTransaction(
+          publicKey,
+          WalletAdapterNetwork.TestnetBeta,
+          config.CONTRACT_PROGRAM_ID,
+          'cancel_order_with_refund',
+          [orderRecord],
+          config.DEFAULT_FEE
+        );
 
-      return await requestTransaction(transaction);
+        const txId = await requestTransaction(transaction);
+
+        setPendingTxs(prev => [{
+          txId,
+          type: 'cancel_order',
+          status: 'pending',
+          submittedAt: Date.now(),
+        }, ...prev]);
+
+        monitorTransaction(txId, (status) => {
+          setPendingTxs(prev =>
+            prev.map(tx => tx.txId === txId ? { ...tx, status: status.status } : tx)
+          );
+        });
+
+        return txId;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Order cancellation failed';
+        setError(msg);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
     },
     [publicKey, requestTransaction]
   );
 
-  /**
-   * Get token records for a specific program
-   */
-  const getTokenRecords = useCallback(
-    async (tokenProgram: string = 'token_registry.aleo') => {
+  // --- Record fetching ---
+
+  const fetchOrderRecords = useCallback(
+    async (): Promise<OrderRecord[]> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!requestRecords) throw new Error('Wallet does not support record requests');
 
+      try {
+        const rawRecords = await requestRecords(config.CONTRACT_PROGRAM_ID);
+        if (!rawRecords || !Array.isArray(rawRecords)) return [];
+
+        const orders: OrderRecord[] = [];
+        for (const record of rawRecords) {
+          const plaintext = typeof record === 'string'
+            ? record
+            : (record as Record<string, unknown>)?.plaintext as string
+              || (record as Record<string, unknown>)?.data as string
+              || '';
+
+          if (!plaintext) continue;
+          const parsed = parseOrderRecord(plaintext);
+          if (parsed) orders.push(parsed);
+        }
+
+        return orders;
+      } catch (err) {
+        console.error('[useWalletOperations] Error fetching records:', err);
+        return [];
+      }
+    },
+    [publicKey, requestRecords]
+  );
+
+  const fetchTokenRecords = useCallback(
+    async (tokenProgram: string = 'token_registry.aleo') => {
+      if (!publicKey) throw new WalletNotConnectedError();
+      if (!requestRecords) throw new Error('Wallet does not support record requests');
       return await requestRecords(tokenProgram);
     },
     [publicKey, requestRecords]
   );
 
-  /**
-   * Decrypt a ciphertext record
-   */
+  // --- Decryption ---
+
   const decryptRecord = useCallback(
-    async (ciphertext: string) => {
+    async (ciphertext: string): Promise<string> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!decrypt) throw new Error('Wallet does not support decryption');
-
       return await decrypt(ciphertext);
     },
     [publicKey, decrypt]
   );
 
-  /**
-   * Sign a message (for authentication or verification)
-   */
+  // --- Message signing ---
+
   const sign = useCallback(
-    async (message: string) => {
+    async (message: string): Promise<string> => {
       if (!publicKey) throw new WalletNotConnectedError();
       if (!signMessage) throw new Error('Wallet does not support signing');
-
       const bytes = new TextEncoder().encode(message);
       const signatureBytes = await signMessage(bytes);
       return new TextDecoder().decode(signatureBytes);
@@ -177,13 +265,37 @@ export function useWalletOperations() {
     [publicKey, signMessage]
   );
 
+  // --- Transaction status ---
+
+  const checkTransactionStatus = useCallback(
+    async (txId: string) => {
+      if (!transactionStatus) return null;
+      return await transactionStatus(txId);
+    },
+    [transactionStatus]
+  );
+
+  const clearError = useCallback(() => setError(null), []);
+
+  const clearPendingTxs = useCallback(() => {
+    setPendingTxs(prev => prev.filter(tx => tx.status === 'pending'));
+  }, []);
+
   return {
     publicKey,
+    connected,
     submitOrder,
-    updateOrder,
+    submitOrderWithEscrow,
     cancelOrder,
-    getTokenRecords,
+    fetchOrderRecords,
+    fetchTokenRecords,
     decryptRecord,
     sign,
+    checkTransactionStatus,
+    pendingTxs,
+    loading,
+    error,
+    clearError,
+    clearPendingTxs,
   };
 }
