@@ -1,199 +1,104 @@
-export interface ContractConfig {
-  programName: string;
-  networkEndpoint: string;
-  timeout: number;
-}
+/**
+ * Aleo Contract Helpers
+ * Pure utility functions for order validation, price/tick conversion,
+ * and Aleo value formatting. No mocks, no network calls.
+ */
 
-export interface TickOrderInput {
-  tokenPair: number;
+import { config } from './config';
+
+// --- Types ---
+
+export interface TickOrderParams {
+  tokenPairId: number;
   isBuy: boolean;
   tickLower: number;
   tickUpper: number;
-  limitPrice: number;
-  quantity: number;
+  limitPrice: number; // In basis points
+  quantity: number;   // In raw token units
 }
 
-export interface SettlementMatch {
-  buyOrderId: string;
-  sellOrderId: string;
+export interface OrderRecord {
+  owner: string;
+  token_pair: number;
+  is_buy: boolean;
+  tick_lower: number;
+  tick_upper: number;
+  limit_price: number;
   quantity: number;
-  executionPrice: number;
+  filled: number;
+  escrowed_amount: number;
   timestamp: number;
+  nonce: string;
+  _plaintext?: string;
+  _nonce?: string;
 }
 
+// --- Validation ---
+
 /**
- * Simulated Aleo contract interface
- * In production, this would compile and execute the actual Leo program
+ * Validate tick order parameters against contract constraints.
+ * Returns null if valid, or an error message string.
  */
-export class AleoContract {
-  private programName: string;
-  private networkEndpoint: string;
+export function validateTickOrder(order: TickOrderParams): string | null {
+  const { tickLower, tickUpper, limitPrice, quantity, tokenPairId } = order;
 
-  constructor(config: ContractConfig) {
-    this.programName = config.programName;
-    this.networkEndpoint = config.networkEndpoint;
+  if (tokenPairId <= 0) {
+    return 'Invalid token pair ID';
   }
 
-  /**
-   * Submit a tick-based order to the Aleo network
-   * Corresponds to: submit_tick_order transition
-   */
-  async submitTickOrder(
-    order: TickOrderInput,
-    viewKey: string
-  ): Promise<{ orderId: string; txId: string }> {
-    // In production: compile Leo program, execute transition, wait for finality
-    // For now: simulate the call
-    console.log('Submitting tick order:', order);
-    console.log('View key:', viewKey);
-
-    // Validate order parameters
-    if (!this.validateTickOrder(order)) {
-      throw new Error('Invalid order parameters');
-    }
-
-    // Simulate network call
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          orderId: `order_${Date.now()}`,
-          txId: `tx_${Date.now()}`,
-        });
-      }, 1000);
-    });
+  if (tickLower >= tickUpper) {
+    return 'Tick lower must be less than tick upper';
   }
 
-  /**
-   * Get tick information (public data)
-   * Corresponds to: tick_registry mapping
-   */
-  async getTickInfo(
-    tokenPair: number,
-    tickId: number
-  ): Promise<{
-    orderCount: number;
-    settledVolume: number;
-    lastUpdate: number;
-  }> {
-    // Simulate fetching from state
-    return {
-      orderCount: Math.floor(Math.random() * 10),
-      settledVolume: Math.floor(Math.random() * 10000),
-      lastUpdate: Date.now(),
-    };
+  const rangeWidth = tickUpper - tickLower;
+  if (rangeWidth > config.MAX_TICK_RANGE) {
+    return `Tick range too wide (max ${config.MAX_TICK_RANGE} ticks)`;
   }
 
-  /**
-   * Match and settle orders
-   * Corresponds to: settle_match transition
-   */
-  async settleMatch(
-    buyOrderId: string,
-    sellOrderId: string,
-    viewKey: string
-  ): Promise<SettlementMatch> {
-    console.log('Settling match:', { buyOrderId, sellOrderId });
-
-    // In production: fetch encrypted orders, verify constraints, execute transition
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          buyOrderId,
-          sellOrderId,
-          quantity: 100,
-          executionPrice: 15.02,
-          timestamp: Date.now(),
-        });
-      }, 800);
-    });
+  if (rangeWidth <= 0) {
+    return 'Tick range must be positive';
   }
 
-  /**
-   * Cancel an unfilled order
-   * Corresponds to: cancel_order transition
-   */
-  async cancelOrder(orderId: string, viewKey: string): Promise<boolean> {
-    console.log('Cancelling order:', orderId);
+  // Check price within range
+  const minAllowed = tickLower * config.TICK_SIZE;
+  const maxAllowed = tickUpper * config.TICK_SIZE;
 
-    // In production: verify ownership via view key, execute cancel transition
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve(true);
-      }, 600);
-    });
+  if (limitPrice < minAllowed || limitPrice > maxAllowed) {
+    return `Limit price must be within tick range ($${(minAllowed / 10000).toFixed(2)} - $${(maxAllowed / 10000).toFixed(2)})`;
   }
 
-  /**
-   * Validate tick order constraints
-   * Mirrors the Leo program validation logic
-   */
-  private validateTickOrder(order: TickOrderInput): boolean {
-    const TICK_SIZE = 100; // basis points
-    const MAX_TICK_RANGE = 50; // max ticks
-
-    // Check tick range validity
-    const rangeWidth = order.tickUpper - order.tickLower;
-    if (rangeWidth > MAX_TICK_RANGE || rangeWidth <= 0) {
-      console.error('Invalid tick range width');
-      return false;
-    }
-
-    // Check price within range
-    const minAllowed = order.tickLower * TICK_SIZE;
-    const maxAllowed = order.tickUpper * TICK_SIZE;
-
-    if (order.limitPrice < minAllowed || order.limitPrice > maxAllowed) {
-      console.error('Limit price outside tick range');
-      return false;
-    }
-
-    // Check quantity is positive
-    if (order.quantity <= 0) {
-      console.error('Quantity must be positive');
-      return false;
-    }
-
-    return true;
+  if (quantity <= 0) {
+    return 'Quantity must be positive';
   }
 
-  /**
-   * Decode an encrypted order (requires viewing key)
-   * Used to view your own orders
-   */
-  decryptOrder(encryptedData: string, viewKey: string): TickOrderInput | null {
-    // In production: use Aleo SDK to decrypt with view key
-    console.log('Decrypting order with view key');
-    return null;
-  }
+  return null;
 }
 
+// --- Price/Tick conversion ---
+
 /**
- * Helper to calculate tick ID from price
- * TICK_SIZE = 100 basis points (0.01 in decimal)
+ * Convert a dollar price to a tick ID.
  */
-export function priceToTick(price: number, tickSize: number = 0.01): number {
-  return Math.floor(price / tickSize);
+export function priceToTick(price: number, tickSize: number = config.TICK_SIZE): number {
+  return Math.floor((price * 10000) / tickSize);
 }
 
 /**
- * Helper to calculate price from tick
+ * Convert a tick ID to a dollar price.
  */
-export function tickToPrice(tickId: number, tickSize: number = 0.01): number {
-  return tickId * tickSize;
+export function tickToPrice(tickId: number, tickSize: number = config.TICK_SIZE): number {
+  return (tickId * tickSize) / 10000;
 }
 
 /**
- * Calculate midpoint execution price (used for settlement)
+ * Calculate midpoint execution price (used for settlement).
  */
-export function calculateMidpointPrice(
-  buyLimit: number,
-  sellLimit: number
-): number {
-  return (buyLimit + sellLimit) / 2;
+export function calculateMidpointPrice(buyLimitBps: number, sellLimitBps: number): number {
+  return Math.floor((buyLimitBps + sellLimitBps) / 2);
 }
 
 /**
- * Verify tick overlap (orders can only match if tick ranges overlap)
+ * Verify tick overlap (orders can only match if tick ranges overlap).
  */
 export function verifyTickOverlap(
   buyTickLower: number,
@@ -203,29 +108,98 @@ export function verifyTickOverlap(
 ): boolean {
   const overlapLow = Math.max(buyTickLower, sellTickLower);
   const overlapHigh = Math.min(buyTickUpper, sellTickUpper);
-  return overlapLow <= overlapHigh;
+  return overlapLow < overlapHigh;
 }
 
-// Example of how to use the contract in a component:
-/*
-import { AleoContract } from '@/lib/aleo-contract';
+// --- Aleo value formatting ---
 
-const contract = new AleoContract({
-  programName: 'sl.aleo',
-  networkEndpoint: 'https://aleo-api.provable.com',
-  timeout: 30000,
-});
+/**
+ * Format a number as an Aleo u64 string.
+ */
+export function toU64(value: number): string {
+  return `${Math.floor(value)}u64`;
+}
 
-// Submit order
-const { orderId, txId } = await contract.submitTickOrder(
-  {
-    tokenPair: 1, // ALEO/USDC
-    isBuy: true,
-    tickLower: 1490,
-    tickUpper: 1510,
-    limitPrice: 1500,
-    quantity: 1000,
-  },
-  'AViewKey1gKT9T9...' // user's view key
-);
-*/
+/**
+ * Format a number as an Aleo u32 string.
+ */
+export function toU32(value: number): string {
+  return `${Math.floor(value)}u32`;
+}
+
+/**
+ * Format a boolean for Aleo.
+ */
+export function toBool(value: boolean): string {
+  return value ? 'true' : 'false';
+}
+
+/**
+ * Format a field element string.
+ */
+export function toField(value: string | number): string {
+  return `${value}field`;
+}
+
+// --- Record parsing ---
+
+/**
+ * Parse a decrypted Aleo record plaintext into an OrderRecord.
+ * Aleo record plaintext format:
+ * "{ owner: aleo1..., token_pair: 1u64, is_buy: true, ... }"
+ */
+export function parseOrderRecord(plaintext: string): OrderRecord | null {
+  try {
+    // Remove outer braces
+    const inner = plaintext.replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
+    const fields: Record<string, string> = {};
+
+    for (const entry of inner.split(',')) {
+      const colonIdx = entry.indexOf(':');
+      if (colonIdx === -1) continue;
+      const key = entry.slice(0, colonIdx).trim();
+      const value = entry.slice(colonIdx + 1).trim();
+      fields[key] = value;
+    }
+
+    const parseNum = (s: string): number => {
+      const m = s.match(/^(\d+)/);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+
+    return {
+      owner: fields.owner || '',
+      token_pair: parseNum(fields.token_pair || '0'),
+      is_buy: fields.is_buy === 'true',
+      tick_lower: parseNum(fields.tick_lower || '0'),
+      tick_upper: parseNum(fields.tick_upper || '0'),
+      limit_price: parseNum(fields.limit_price || '0'),
+      quantity: parseNum(fields.quantity || '0'),
+      filled: parseNum(fields.filled || '0'),
+      escrowed_amount: parseNum(fields.escrowed_amount || '0'),
+      timestamp: parseNum(fields.timestamp || '0'),
+      nonce: fields._nonce || '',
+      _plaintext: plaintext,
+      _nonce: fields._nonce || '',
+    };
+  } catch (err) {
+    console.error('[parseOrderRecord] Failed to parse:', err);
+    return null;
+  }
+}
+
+/**
+ * Format an address for display (truncated).
+ */
+export function formatAddress(address: string): string {
+  if (address.length <= 16) return address;
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+}
+
+/**
+ * Format a transaction ID for display (truncated).
+ */
+export function formatTxId(txId: string): string {
+  if (txId.length <= 16) return txId;
+  return `${txId.slice(0, 10)}...${txId.slice(-8)}`;
+}

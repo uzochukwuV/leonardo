@@ -74,12 +74,12 @@ export function Header() {
         {/* Market Info */}
         <div className="hidden lg:flex items-center gap-6">
           <div className="text-right">
-            <p className="text-xs text-muted-foreground">Last Price</p>
-            <p className="text-sm font-mono text-primary">$15.02</p>
+            <p className="text-xs text-muted-foreground">Network</p>
+            <p className="text-sm font-mono text-primary">Aleo Testnet</p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-muted-foreground">24h Volume</p>
-            <p className="text-sm font-mono text-accent">125K ALEO</p>
+            <p className="text-xs text-muted-foreground">Program</p>
+            <p className="text-sm font-mono text-accent truncate max-w-[140px]">private_orderbook_v1</p>
           </div>
         </div>
 
@@ -163,7 +163,7 @@ export function Header() {
                       </Button>
                     </Link>
                     <a
-                      href={`https://explorer.aleo.org/address/${publicKey}`}
+                      href={`https://explorer.provable.com/address/${publicKey}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="block"

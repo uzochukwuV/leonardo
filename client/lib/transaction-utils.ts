@@ -1,298 +1,173 @@
-export interface TransactionInput {
-  visibility: 'public' | 'private';
-  value: string | number | boolean;
-  type: string;
-}
-
-export interface TransactionPayload {
-  transition: string;
-  inputs: TransactionInput[];
-}
-
 /**
- * Encode a value for transaction submission
- * Converts JavaScript values to Aleo format
+ * Transaction Utilities
+ * Functions for building Aleo transaction inputs and monitoring transaction status.
  */
-export function encodeValue(value: unknown, type: string): string {
-  if (type.includes('u64')) {
-    return `${value}u64`;
-  }
 
-  if (type.includes('bool')) {
-    return String(value);
-  }
+import { config } from './config';
+import { aleoService, type TransactionStatus } from './aleo-service';
 
-  if (type.includes('field')) {
-    return `${value}field`;
-  }
-
-  if (type.includes('address')) {
-    return String(value);
-  }
-
-  // Default: return as string
-  return String(value);
-}
+// --- Transaction input builders ---
 
 /**
- * Create transaction payload for order submission
+ * Build inputs array for submit_tick_order transition.
  */
-export function createOrderPayload(
-  tokenPair: number,
-  isBuy: boolean,
-  tickLower: number,
-  tickUpper: number,
-  limitPrice: number,
-  quantity: number
-): TransactionPayload {
-  return {
-    transition: 'submit_tick_order',
-    inputs: [
-      {
-        visibility: 'public',
-        value: tokenPair,
-        type: 'u64',
-      },
-      {
-        visibility: 'public',
-        value: isBuy,
-        type: 'bool',
-      },
-      {
-        visibility: 'public',
-        value: tickLower,
-        type: 'u64',
-      },
-      {
-        visibility: 'public',
-        value: tickUpper,
-        type: 'u64',
-      },
-      {
-        visibility: 'private',
-        value: limitPrice,
-        type: 'u64',
-      },
-      {
-        visibility: 'private',
-        value: quantity,
-        type: 'u64',
-      },
-    ],
-  };
+export function buildSubmitOrderInputs(params: {
+  tokenPairId: number;
+  isBuy: boolean;
+  tickLower: number;
+  tickUpper: number;
+  limitPrice: number;
+  quantity: number;
+}): string[] {
+  const timestamp = Math.floor(Date.now() / 1000);
+  return [
+    `${params.tokenPairId}u64`,
+    params.isBuy ? 'true' : 'false',
+    `${params.tickLower}u64`,
+    `${params.tickUpper}u64`,
+    `${timestamp}u32`,
+    `${params.limitPrice}u64`,
+    `${params.quantity}u64`,
+  ];
 }
 
 /**
- * Create transaction payload for order settlement
+ * Build inputs array for submit_tick_order_with_escrow transition.
  */
-export function createSettlementPayload(
-  buyOrderId: string,
-  sellOrderId: string,
-  quantity: number,
-  executionPrice: number
-): TransactionPayload {
-  return {
-    transition: 'settle_match',
-    inputs: [
-      {
-        visibility: 'private',
-        value: buyOrderId,
-        type: 'TickOrder',
-      },
-      {
-        visibility: 'private',
-        value: sellOrderId,
-        type: 'TickOrder',
-      },
-      {
-        visibility: 'public',
-        value: Math.floor(Date.now() / 1000),
-        type: 'u32',
-      },
-    ],
-  };
+export function buildSubmitOrderWithEscrowInputs(params: {
+  tokenPairId: number;
+  isBuy: boolean;
+  tickLower: number;
+  tickUpper: number;
+  limitPrice: number;
+  quantity: number;
+  escrowTokenRecord: string;
+}): string[] {
+  const timestamp = Math.floor(Date.now() / 1000);
+  return [
+    `${params.tokenPairId}u64`,
+    params.isBuy ? 'true' : 'false',
+    `${params.tickLower}u64`,
+    `${params.tickUpper}u64`,
+    `${timestamp}u32`,
+    `${params.limitPrice}u64`,
+    `${params.quantity}u64`,
+    params.escrowTokenRecord,
+  ];
 }
 
 /**
- * Create transaction payload for cancellation
+ * Build inputs array for update_order transition.
  */
-export function createCancelPayload(orderId: string): TransactionPayload {
-  return {
-    transition: 'cancel_order',
-    inputs: [
-      {
-        visibility: 'private',
-        value: orderId,
-        type: 'TickOrder',
-      },
-    ],
-  };
+export function buildUpdateOrderInputs(params: {
+  orderRecord: string;
+  newTickLower: number;
+  newTickUpper: number;
+  newLimitPrice: number;
+  newQuantity: number;
+}): string[] {
+  return [
+    params.orderRecord,
+    `${params.newTickLower}u64`,
+    `${params.newTickUpper}u64`,
+    `${params.newLimitPrice}u64`,
+    `${params.newQuantity}u64`,
+  ];
 }
 
 /**
- * Monitor transaction status
- * In production, this would poll the Aleo network
+ * Build inputs array for cancel_order transition.
+ */
+export function buildCancelOrderInputs(orderRecord: string): string[] {
+  return [orderRecord];
+}
+
+/**
+ * Build inputs array for cancel_order_with_refund transition.
+ */
+export function buildCancelWithRefundInputs(orderRecord: string): string[] {
+  return [orderRecord];
+}
+
+// --- Transaction monitoring ---
+
+export type TxMonitorCallback = (status: TransactionStatus) => void;
+
+/**
+ * Poll the Aleo API until a transaction is confirmed or fails.
+ * Returns the final status.
  */
 export async function monitorTransaction(
   txId: string,
-  maxRetries: number = 30,
-  pollInterval: number = 2000
-): Promise<'confirmed' | 'failed' | 'timeout'> {
-  let retries = 0;
+  onStatusChange?: TxMonitorCallback,
+  pollInterval: number = config.TX_POLL_INTERVAL,
+  maxAttempts: number = config.TX_MAX_POLL_ATTEMPTS
+): Promise<TransactionStatus> {
+  let lastStatus: TransactionStatus['status'] = 'not_found';
 
-  while (retries < maxRetries) {
-    try {
-      // In production: call Aleo API to check tx status
-      // const response = await fetch(`${ALEO_API}/transaction/${txId}`);
-      // const status = await response.json();
-      // if (status.status === 'confirmed') return 'confirmed';
-      // if (status.status === 'failed') return 'failed';
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const status = await aleoService.getTransactionStatus(txId);
 
-      // Simulate checking status
-      console.log(`[Monitoring] Transaction ${txId} - Attempt ${retries + 1}`);
-
-      retries++;
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-    } catch (error) {
-      console.error('Error monitoring transaction:', error);
-      retries++;
+    if (status.status !== lastStatus) {
+      lastStatus = status.status;
+      onStatusChange?.(status);
     }
+
+    if (status.status === 'confirmed' || status.status === 'rejected') {
+      return status;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
 
-  return 'timeout';
+  // Timed out
+  const finalStatus: TransactionStatus = {
+    status: 'not_found',
+    transactionId: txId,
+  };
+  onStatusChange?.(finalStatus);
+  return finalStatus;
+}
+
+// --- Display helpers ---
+
+/**
+ * Format a transaction ID for display.
+ */
+export function formatTxId(txId: string): string {
+  if (!txId || txId.length <= 16) return txId || '';
+  return `${txId.slice(0, 10)}...${txId.slice(-8)}`;
 }
 
 /**
- * Simulate transaction execution for testing
- * In production, this would use the actual Aleo SDK
+ * Get a human-readable status label.
  */
-export async function executeTransactionSimulated(
-  payload: TransactionPayload
-): Promise<{ txId: string; success: boolean }> {
-  console.log('Executing transaction:', payload);
-
-  // Validate payload
-  if (!payload.transition || !payload.inputs) {
-    throw new Error('Invalid transaction payload');
+export function getStatusLabel(status: TransactionStatus['status']): string {
+  switch (status) {
+    case 'confirmed': return 'Confirmed';
+    case 'pending': return 'Pending';
+    case 'rejected': return 'Rejected';
+    case 'not_found': return 'Processing';
+    default: return 'Unknown';
   }
-
-  // Simulate network delay
-  await new Promise((resolve) => setTimeout(resolve, 800));
-
-  const txId = generateTxId();
-
-  console.log(`Transaction submitted: ${txId}`);
-
-  return {
-    txId,
-    success: true,
-  };
 }
 
 /**
- * Generate mock transaction ID
+ * Get a CSS class for status badge coloring.
  */
-export function generateTxId(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+export function getStatusColor(status: TransactionStatus['status']): string {
+  switch (status) {
+    case 'confirmed': return 'bg-green-500/20 text-green-600';
+    case 'pending': return 'bg-yellow-500/20 text-yellow-600';
+    case 'rejected': return 'bg-red-500/20 text-red-600';
+    case 'not_found': return 'bg-blue-500/20 text-blue-600';
+    default: return 'bg-muted text-muted-foreground';
+  }
 }
 
 /**
- * Format transaction for display
+ * Estimate fee in credits (display-friendly).
  */
-export function formatTransaction(txId: string): string {
-  return `${txId.slice(0, 8)}...${txId.slice(-8)}`;
-}
-
-/**
- * Verify transaction signature
- * In production, would use Aleo SDK signature verification
- */
-export function verifyTransactionSignature(
-  txData: string,
-  signature: string,
-  publicKey: string
-): boolean {
-  // Simulate signature verification
-  console.log('Verifying signature...');
-  return true;
-}
-
-/**
- * Estimate transaction fee
- * Based on transaction size and network conditions
- */
-export function estimateTransactionFee(
-  transitionName: string,
-  inputCount: number
-): number {
-  // Base fee: 1 credit
-  // Additional: 0.1 per input
-  const baseFee = 1;
-  const inputFee = inputCount * 0.1;
-
-  return baseFee + inputFee;
-}
-
-/**
- * Parse transaction result
- * Extracts outputs from executed transaction
- */
-export interface TransactionResult {
-  txId: string;
-  status: 'confirmed' | 'pending' | 'failed';
-  outputs: Record<string, unknown>;
-  timestamp: number;
-}
-
-export function parseTransactionResult(
-  txResponse: Record<string, unknown>
-): TransactionResult {
-  return {
-    txId: String(txResponse.id || ''),
-    status: (txResponse.status as string) as 'confirmed' | 'pending' | 'failed',
-    outputs: (txResponse.outputs as Record<string, unknown>) || {},
-    timestamp: Date.now(),
-  };
-}
-
-/**
- * Simulate order execution result
- */
-export function generateOrderExecutionResult(
-  orderId: string
-): TransactionResult {
-  return {
-    txId: generateTxId(),
-    status: 'confirmed',
-    outputs: {
-      orderId,
-      status: 'active',
-      filled: 0,
-      timestamp: Math.floor(Date.now() / 1000),
-    },
-    timestamp: Date.now(),
-  };
-}
-
-/**
- * Simulate settlement result
- */
-export function generateSettlementResult(
-  buyOrderId: string,
-  sellOrderId: string,
-  quantity: number,
-  executionPrice: number
-): TransactionResult {
-  return {
-    txId: generateTxId(),
-    status: 'confirmed',
-    outputs: {
-      buyOrderId,
-      sellOrderId,
-      quantity,
-      executionPrice,
-      timestamp: Math.floor(Date.now() / 1000),
-    },
-    timestamp: Date.now(),
-  };
+export function estimateFeeCredits(feeInMicrocredits: number = config.DEFAULT_FEE): string {
+  return (feeInMicrocredits / 1_000_000).toFixed(6);
 }
