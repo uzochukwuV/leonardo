@@ -5,18 +5,24 @@ import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
 import { WalletAdapterNetwork, Transaction } from '@demox-labs/aleo-wallet-adapter-base';
 import { Button } from '@/components/ui/button';
 import { TokenPairSelector } from '@/components/token-pair-selector';
+import { TokenRecordSelector } from '@/components/token-record-selector';
+import { useOrderBookContext, type TokenRecord } from '@/contexts/order-book-context';
 import { getTokenPair, priceToBasisPoints, priceToTick, calculateEscrowAmount } from '@/lib/token-pairs';
 import { config } from '@/lib/config';
-import { Lock, AlertCircle } from 'lucide-react';
+import { monitorTransaction } from '@/lib/transaction-utils';
+import { aleoService } from '@/lib/aleo-service';
+import { Lock, AlertCircle, Shield, Loader2, ExternalLink } from 'lucide-react';
 
 export function OrderPlacementForm() {
-  const { publicKey, connected, requestTransaction, wallet } = useWallet();
+  const { publicKey, connected, requestTransaction } = useWallet();
+  const { addPendingOrder, updateOrderStatus, selectedPairId, setSelectedPairId } = useOrderBookContext();
 
-  const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
   const [limitPrice, setLimitPrice] = useState(config.BASE_PRICE.toString());
   const [tickRangeWidth, setTickRangeWidth] = useState((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
+  const [escrowMode, setEscrowMode] = useState(false);
+  const [selectedTokenRecord, setSelectedTokenRecord] = useState<TokenRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -25,7 +31,7 @@ export function OrderPlacementForm() {
   const selectedPair = getTokenPair(selectedPairId);
 
   if (!selectedPair) {
-    return <div>Invalid token pair</div>;
+    return <div className="p-4 text-destructive">Invalid token pair</div>;
   }
 
   // Calculate tick bounds based on limit price and range
@@ -33,6 +39,13 @@ export function OrderPlacementForm() {
   const rangeWidth = parseFloat(tickRangeWidth) || (config.MAX_TICK_RANGE * config.TICK_SIZE / 10000);
   const tickLower = Math.max(selectedPair.minPrice / 10000, limit - rangeWidth / 2);
   const tickUpper = tickLower + rangeWidth;
+
+  // Calculate escrow amount for display
+  const qty = parseFloat(quantity) || 0;
+  const price = parseFloat(limitPrice) || 0;
+  const quantityRaw = Math.floor(qty * Math.pow(10, selectedPair.baseToken.decimals));
+  const limitPriceBps = priceToBasisPoints(price);
+  const escrowAmount = calculateEscrowAmount(side === 'buy', quantityRaw, limitPriceBps);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,10 +58,12 @@ export function OrderPlacementForm() {
       return;
     }
 
-    try {
-      const qty = parseFloat(quantity);
-      const price = parseFloat(limitPrice);
+    if (!requestTransaction) {
+      setError('Wallet does not support transactions');
+      return;
+    }
 
+    try {
       if (!qty || qty <= 0) {
         setError('Please enter a valid quantity');
         return;
@@ -64,38 +79,57 @@ export function OrderPlacementForm() {
         return;
       }
 
+      if (escrowMode && !selectedTokenRecord) {
+        setError('Please select a token record for escrow');
+        return;
+      }
+
       setSubmitting(true);
 
       // Convert to contract format
-      const tokenPairId = selectedPairId;
-      const isBuy = side === 'buy';
       const tickLowerId = priceToTick(tickLower, selectedPair.tickSize);
       const tickUpperId = priceToTick(tickUpper, selectedPair.tickSize);
-      const limitPriceBps = priceToBasisPoints(price);
-      const quantityRaw = Math.floor(qty * Math.pow(10, selectedPair.baseToken.decimals));
-      const escrowAmount = calculateEscrowAmount(isBuy, quantityRaw, limitPriceBps);
-
-      // Get current timestamp (in seconds, convert to u32)
       const timestamp = Math.floor(Date.now() / 1000);
+      const isBuy = side === 'buy';
 
-      // Create transaction inputs
-      const inputs = [
-        `${tokenPairId}u64`,           // token_pair_id
-        `${isBuy}`,                     // is_buy
-        `${tickLowerId}u64`,            // tick_lower
-        `${tickUpperId}u64`,            // tick_upper
-        `${timestamp}u32`,              // timestamp
-        `${limitPriceBps}u64`,          // limit_price
-        `${quantityRaw}u64`,            // quantity
-      ];
+      let inputs: string[];
+      let functionName: string;
 
-      console.log('Submitting order:', {
-        tokenPairId,
+      if (escrowMode && selectedTokenRecord) {
+        // Use submit_tick_order_with_escrow with token record
+        functionName = 'submit_tick_order_with_escrow';
+        inputs = [
+          `${selectedPairId}u64`,
+          `${isBuy}`,
+          `${tickLowerId}u64`,
+          `${tickUpperId}u64`,
+          `${timestamp}u32`,
+          `${limitPriceBps}u64`,
+          `${quantityRaw}u64`,
+          selectedTokenRecord.plaintext, // Pass the full record plaintext
+        ];
+      } else {
+        // Use submit_tick_order (testing mode without escrow)
+        functionName = 'submit_tick_order';
+        inputs = [
+          `${selectedPairId}u64`,
+          `${isBuy}`,
+          `${tickLowerId}u64`,
+          `${tickUpperId}u64`,
+          `${timestamp}u32`,
+          `${limitPriceBps}u64`,
+          `${quantityRaw}u64`,
+        ];
+      }
+
+      console.log(`Submitting order via ${functionName}:`, {
+        selectedPairId,
         isBuy,
         tickLowerId,
         tickUpperId,
         limitPriceBps,
         quantityRaw,
+        escrowMode,
         inputs,
       });
 
@@ -104,27 +138,46 @@ export function OrderPlacementForm() {
         publicKey,
         WalletAdapterNetwork.TestnetBeta,
         config.CONTRACT_PROGRAM_ID,
-        'submit_tick_order',
+        functionName,
         inputs,
         config.DEFAULT_FEE
       );
 
-      if (!requestTransaction) {
-        throw new Error('Wallet does not support transaction requests');
-      }
-
       const transactionId = await requestTransaction(transaction);
+
+      // Add to pending orders immediately for UI feedback
+      addPendingOrder({
+        txId: transactionId,
+        side,
+        tickLower: tickLowerId,
+        tickUpper: tickUpperId,
+        limitPrice: price,
+        quantity: quantityRaw,
+      });
 
       setSuccess(true);
       setTxId(transactionId);
-      setQuantity('');
+
+      // Reset form
+      setQuantity('100');
       setLimitPrice(config.BASE_PRICE.toString());
       setTickRangeWidth((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
+      setSelectedTokenRecord(null);
 
+      // Monitor transaction in background
+      monitorTransaction(transactionId, (status) => {
+        if (status.status === 'confirmed') {
+          updateOrderStatus(transactionId, 'confirmed');
+        } else if (status.status === 'rejected') {
+          updateOrderStatus(transactionId, 'failed');
+        }
+      });
+
+      // Clear success after 15 seconds
       setTimeout(() => {
         setSuccess(false);
         setTxId(null);
-      }, 10000);
+      }, 15000);
     } catch (err) {
       console.error('Order submission error:', err);
       setError(err instanceof Error ? err.message : 'Failed to place order');
@@ -191,6 +244,49 @@ export function OrderPlacementForm() {
           </div>
         </div>
 
+        {/* Escrow Mode Toggle */}
+        <div className="p-4 rounded-lg border border-border bg-muted/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Shield className={`w-5 h-5 ${escrowMode ? 'text-primary' : 'text-muted-foreground'}`} />
+              <div>
+                <p className="text-sm font-semibold text-foreground">Escrow Mode</p>
+                <p className="text-xs text-muted-foreground">
+                  Lock tokens as collateral for your order
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEscrowMode(!escrowMode);
+                if (escrowMode) {
+                  setSelectedTokenRecord(null);
+                }
+              }}
+              className={`relative w-12 h-6 rounded-full transition-colors ${
+                escrowMode ? 'bg-primary' : 'bg-muted'
+              }`}
+            >
+              <span
+                className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  escrowMode ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {escrowMode && (
+            <div className="mt-4 pt-4 border-t border-border">
+              <TokenRecordSelector
+                selectedRecord={selectedTokenRecord}
+                onSelectRecord={setSelectedTokenRecord}
+                minAmount={BigInt(escrowAmount)}
+              />
+            </div>
+          )}
+        </div>
+
         {/* Public Tick Range */}
         <div>
           <label className="block text-sm font-semibold text-foreground mb-2">
@@ -254,7 +350,7 @@ export function OrderPlacementForm() {
             </span>
           </label>
           <p className="text-xs text-muted-foreground mb-3">
-            Only you see this value. It's encrypted on-chain.
+            Only you see this value. It&apos;s encrypted on-chain.
           </p>
           <input
             type="number"
@@ -267,9 +363,6 @@ export function OrderPlacementForm() {
             placeholder={config.BASE_PRICE.toString()}
             className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
           />
-          <p className="text-xs text-muted-foreground mt-2">
-            ${Math.abs(parseFloat(limitPrice) - config.BASE_PRICE).toFixed(4)} from market
-          </p>
         </div>
 
         {/* Quantity */}
@@ -293,12 +386,22 @@ export function OrderPlacementForm() {
             placeholder="100"
             className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
           />
-          <p className="text-xs text-muted-foreground mt-2">
-            Estimated value:{' '}
-            <span className="font-mono font-bold text-accent">
-              ${(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)} {selectedPair.quoteToken.symbol}
+          <div className="flex justify-between mt-2 text-xs text-muted-foreground">
+            <span>
+              Estimated value:{' '}
+              <span className="font-mono font-bold text-accent">
+                ${(qty * price).toFixed(2)} {selectedPair.quoteToken.symbol}
+              </span>
             </span>
-          </p>
+            {escrowMode && (
+              <span>
+                Escrow required:{' '}
+                <span className="font-mono font-bold text-primary">
+                  {(escrowAmount / 1_000_000).toFixed(2)}
+                </span>
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Error Message */}
@@ -309,23 +412,30 @@ export function OrderPlacementForm() {
         )}
 
         {/* Success Message */}
-        {success && (
-          <div className="p-3 rounded-lg bg-primary/10 border border-primary/30">
-            <p className="text-sm text-primary font-semibold">
-              Order placed successfully! Waiting for settlement.
+        {success && txId && (
+          <div className="p-4 rounded-lg bg-primary/10 border border-primary/30">
+            <p className="text-sm text-primary font-semibold mb-2">
+              Order submitted successfully!
             </p>
-            {txId && (
-              <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
-                TX: {txId}
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground mb-2">
+              Your order has been added to the order book. Transaction is being processed.
+            </p>
+            <a
+              href={aleoService.getExplorerTxUrl(txId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline flex items-center gap-1"
+            >
+              <span className="font-mono">{txId.slice(0, 20)}...</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
           </div>
         )}
 
         {/* Submit Button */}
         <Button
           type="submit"
-          disabled={!connected || submitting}
+          disabled={!connected || submitting || (escrowMode && !selectedTokenRecord)}
           className={`w-full py-3 font-semibold rounded-lg transition-all ${
             side === 'buy'
               ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
@@ -333,12 +443,16 @@ export function OrderPlacementForm() {
           }`}
         >
           {submitting ? (
-            'Placing Order...'
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Placing Order...
+            </span>
           ) : (
             <>
-              {side === 'buy' ? 'Place Buy Order' : 'Place Sell Order'} •{' '}
-              {(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)}{' '}
-              {selectedPair.quoteToken.symbol}
+              {side === 'buy' ? 'Place Buy Order' : 'Place Sell Order'}
+              {escrowMode && ' (with Escrow)'}
+              {' • '}
+              ${(qty * price).toFixed(2)} {selectedPair.quoteToken.symbol}
             </>
           )}
         </Button>

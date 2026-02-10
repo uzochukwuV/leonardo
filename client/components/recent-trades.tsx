@@ -1,14 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { useOrderBook, type RecentTrade } from '@/hooks/use-order-book';
+import { useOrderBookContext, type RecentTrade } from '@/contexts/order-book-context';
 import { TrendingUp, TrendingDown, Wifi, WifiOff } from 'lucide-react';
-import { config } from '@/lib/config';
 
 export function RecentTrades() {
-  const [selectedPairId] = useState(config.DEFAULT_TOKEN_PAIR);
-
-  const { recentTrades, isLive } = useOrderBook(selectedPairId);
+  const { recentTrades, isLive } = useOrderBookContext();
 
   const formatTime = (timestamp: number) => {
     if (!timestamp || timestamp <= 0) return 'Unknown';

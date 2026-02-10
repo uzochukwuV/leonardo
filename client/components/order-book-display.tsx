@@ -1,14 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { useOrderBook, type TickDisplayInfo } from '@/hooks/use-order-book';
+import { useOrderBookContext, type TickDisplayInfo } from '@/contexts/order-book-context';
 import { Button } from '@/components/ui/button';
 import { RotateCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
-import { config } from '@/lib/config';
 
 export function OrderBookDisplay() {
-  const [selectedPairId] = useState(config.DEFAULT_TOKEN_PAIR);
-
   const {
     ticks,
     stats,
@@ -16,7 +12,7 @@ export function OrderBookDisplay() {
     error,
     isLive,
     refreshOrderBook,
-  } = useOrderBook(selectedPairId);
+  } = useOrderBookContext();
 
   const sortedTicks = Object.values(ticks).sort((a, b) => a.tickId - b.tickId);
   const hasTicks = sortedTicks.length > 0;

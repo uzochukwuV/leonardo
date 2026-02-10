@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
 import { Button } from '@/components/ui/button';
-import { X, TrendingUp, TrendingDown, RefreshCw, Loader2 } from 'lucide-react';
+import { X, TrendingUp, TrendingDown, RefreshCw, Loader2, Clock } from 'lucide-react';
 import { useWalletOperations } from '@/hooks/use-wallet-operations';
+import { useOrderBookContext, type PendingOrder } from '@/contexts/order-book-context';
 import type { OrderRecord } from '@/lib/aleo-contract';
 import { basisPointsToPrice, tickToPrice } from '@/lib/token-pairs';
 import { formatTxId } from '@/lib/transaction-utils';
@@ -29,6 +30,7 @@ export function UserOrders() {
     pendingTxs,
     loading: walletLoading,
   } = useWalletOperations();
+  const { pendingOrders } = useOrderBookContext();
 
   const [orders, setOrders] = useState<DisplayOrder[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -140,11 +142,28 @@ export function UserOrders() {
         </Button>
       </div>
 
+      {/* Pending Orders from Context (immediate UI feedback) */}
+      {pendingOrders.filter(o => o.status === 'pending').length > 0 && (
+        <div className="mb-4 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <div className="flex items-center gap-2 mb-3">
+            <Clock className="w-4 h-4 text-amber-600 animate-pulse" />
+            <p className="text-sm text-amber-600 font-semibold">
+              Pending Orders ({pendingOrders.filter(o => o.status === 'pending').length})
+            </p>
+          </div>
+          <div className="space-y-2">
+            {pendingOrders.filter(o => o.status === 'pending').slice(0, 5).map(order => (
+              <PendingOrderRow key={order.id} order={order} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Pending Transactions Banner */}
       {pendingTxs.length > 0 && (
         <div className="mb-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/30">
           <p className="text-sm text-blue-600 font-semibold mb-1">
-            Pending Transactions ({pendingTxs.filter(t => t.status === 'pending').length})
+            Transactions ({pendingTxs.filter(t => t.status === 'pending').length} pending)
           </p>
           <div className="space-y-1">
             {pendingTxs.slice(0, 3).map(tx => (
@@ -319,6 +338,59 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Component to display pending orders from context (immediate feedback)
+function PendingOrderRow({ order }: { order: PendingOrder }) {
+  const isBuy = order.side === 'buy';
+  const timeSinceSubmit = Math.floor((Date.now() - order.submittedAt) / 1000);
+
+  return (
+    <div className="border border-amber-500/30 rounded-lg p-3 bg-amber-500/5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {isBuy ? (
+            <TrendingUp className="w-4 h-4 text-primary" />
+          ) : (
+            <TrendingDown className="w-4 h-4 text-destructive" />
+          )}
+          <span
+            className={`text-xs font-bold uppercase px-2 py-0.5 rounded ${
+              isBuy
+                ? 'bg-primary/20 text-primary'
+                : 'bg-destructive/20 text-destructive'
+            }`}
+          >
+            {isBuy ? 'BUY' : 'SELL'}
+          </span>
+          <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-600 flex items-center gap-1">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Confirming
+          </span>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {timeSinceSubmit}s ago
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+        <div>
+          <span className="text-muted-foreground">Tick: </span>
+          <span className="font-mono text-foreground">{order.tickLower}-{order.tickUpper}</span>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Price: </span>
+          <span className="font-mono text-foreground">${order.limitPrice.toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Qty: </span>
+          <span className="font-mono text-foreground">{order.quantity.toLocaleString()}</span>
+        </div>
+      </div>
+      <p className="mt-2 text-xs font-mono text-muted-foreground truncate">
+        TX: {formatTxId(order.txId)}
+      </p>
     </div>
   );
 }
