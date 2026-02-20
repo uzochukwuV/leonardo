@@ -16,10 +16,13 @@ import { useState, useCallback, useEffect } from 'react';
 import { useContract } from './use-contract';
 import { config } from '@/lib/config';
 
+
+
+
 // ─── Puzzle SDK (Puzzle wallet only) ─────────────────────────────────────────
 // Only import when the Puzzle provider is available; guarded by try-catch on usage.
 let _useRecords: typeof import('@puzzlehq/sdk').useRecords | null = null;
-let _RecordStatus: typeof import('@puzzlehq/sdk').RecordStatus | null = null;
+let _RecordStatus: typeof import('@puzzlehq/sdk') | null = null;
 try {
   // Dynamic require keeps Next.js SSR from crashing when Puzzle SDK has no ESM exports
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -167,8 +170,8 @@ function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: st
   const { records, loading, error, fetchPage: refresh } = _useRecords({
     filter: {
       programIds: [config.CONTRACT_PROGRAM_ID],
-      status: _RecordStatus.Unspent,
-    },
+      status: null,
+    } as any,
   });
 
   const orders: ParsedOrder[] = (records ?? [])
@@ -194,7 +197,7 @@ function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: st
           expires_at:      data.expires_at ?? '0',
           _nonce:          data._nonce,
         },
-        spent: r.status === _RecordStatus!.Spent,
+        spent: r.status !== null,
       };
 
       // If data fields are missing, try parsing from plaintext

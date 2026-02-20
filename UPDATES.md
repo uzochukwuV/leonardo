@@ -1,8 +1,83 @@
-# Update Notes — Frontend Order Book Integration
+# Update Notes — Smart Contract v4 & Frontend Order Book Integration
 
 ## Overview
 
-This round focused on connecting the frontend dashboard to real on-chain data from `private_orderbook_v4.aleo` deployed on Aleo testnet. The order book was showing 0 buys and 0 sells despite orders existing on-chain. We traced, fixed, and refactored the entire data pipeline.
+This round covered two areas: upgrading the smart contract from v3 to v4 with significant new capabilities, and then connecting the frontend dashboard to real on-chain data from the deployed contract. The order book was showing 0 buys and 0 sells despite orders existing on-chain — we traced, fixed, and refactored the entire data pipeline.
+
+---
+
+## Smart Contract: `private_orderbook_v4.aleo`
+
+### What Changed from v3
+
+The contract was rewritten as a full upgrade. Key improvements:
+
+**Partial Fill Support**
+In v3, settlement removed the escrow entry entirely. In v4, `escrow_registry` is updated (not removed) when a fill is partial. Only a full fill removes the entry. This allows an order to be matched multiple times across separate settlement calls until fully consumed.
+
+**Contract-Derived Order Key**
+In v3, the `order_key` was supplied by the user — a security risk since a malicious caller could supply a key that maps to another user's escrow. In v4, the key is derived inside the contract:
+```leo
+let nonce: field = BHP256::hash_to_field(
+    self.caller as field + tick_lower as field + tick_upper as field + timestamp as field
+);
+let order_key: field = derive_order_key(nonce, new_counter);
+```
+The user cannot predict or forge this key.
+
+**Per-Pair Tick Size**
+All price and range validations now use `pair.tick_size` fetched from the `token_pairs` mapping, rather than a global constant. This allows different pairs to have different price granularities.
+
+**Permissionless Settlement with Keeper Fees**
+Any caller holding both `TickOrder` records can call `settle_match_public`. The settler earns `settler_fee_bps` (0.1%) from the quote gross as a keeper reward. A separate `protocol_fee_bps` (0.05%) goes to the treasury address set at pair registration. This incentivises external keepers to find and match orders.
+
+**Order Expiry**
+`TickOrder` now carries an `expires_at: u32` field (block height). If non-zero, the contract asserts `expires_at > block.height` at submission time. Orders with `expires_at = 0` never expire.
+
+**Ceil Rounding on Escrow**
+Quote escrow is computed with ceiling division to prevent dust:
+```leo
+inline calc_escrow(is_buy: bool, quantity: u128, price: u64) -> u128 {
+    if is_buy {
+        return (quantity * price as u128 + 9999u128) / 10000u128;
+    } else {
+        return quantity;
+    }
+}
+```
+This ensures the escrowed amount always covers the full quote obligation.
+
+**Two Settlement Variants**
+- `settle_match_public` — lightweight, no explicit order keys. Updates `total_escrowed` only.
+- `settle_match_public_with_keys` — takes explicit `buy_order_key` and `sell_order_key`, does full `escrow_registry` cleanup and identity verification against the depositor address.
+
+**Batch Settlement**
+`batch_settle_public` settles two independent matches (A and B) in a single transaction. Both matches can be from different token pairs. The keeper earns fees from both.
+
+**Idempotent-Safe Pair Registration**
+`finalize_register_pair` now asserts `!already_exists` before writing, preventing accidental overwrites.
+
+**`@noupgrade` Constructor**
+Added the required `@noupgrade async constructor() {}` for compatibility with Aleo ConsensusVersion::V9, which mandates that all deployed programs include a constructor.
+
+### New Data Structures
+
+- `SettleInfo` — packs all settlement parameters into one struct to stay under the 16-argument limit on `async` functions
+- `TickRange` — packs the four tick bounds (buy_lower, buy_upper, sell_lower, sell_upper) for passing to finalize
+- `Settlement` — private record minted to buyer and seller on each fill, carrying quantity, exec price, and direction
+
+### Demo Script (`demo.sh`)
+
+The demo script was updated alongside the contract:
+
+- **`registry_tx()` fixed**: `leo execute` cannot call external programs. Replaced with `snarkos developer execute "$REGISTRY" "$func"` using `--network 1` (testnet numeric ID) and `--endpoint https://api.explorer.provable.com` (auto-extends).
+- **Token IDs**: Using `7001field` / `7002field` to avoid collision with `1field` / `2field` already registered by a different admin on testnet.
+- **Pair ID 2**: Pair 1 is owned by a different admin. The script registers ALEO/USDC as pair 2 with fee params: `settler_fee_bps=10`, `protocol_fee_bps=5`, `treasury=deployer`.
+- **On-chain checks before setup**: Steps 5 and 6 now query the Provable v2 API first and auto-skip if admin/pair already exist — so re-running with `--skip-setup` is safe.
+- **Record extraction fix**: The settle step was failing with `Found invalid character in: " }"`. The awk+sed pipeline was rewritten to collapse whitespace and strip spaces before `}` in the extracted `TickOrder` record literals.
+- **28 Leo tests**: A full test suite was written for `private_orderbook_v4.aleo` using `@test script` blocks (pure computation, no external program calls). All 28 tests pass, covering escrow math, exec price midpoint, fill quantity, tick overlap, tick range validation, price bounds, and full/partial settlement arithmetic.
+
+---
 
 ---
 
