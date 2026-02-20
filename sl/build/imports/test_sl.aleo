@@ -1,4 +1,3 @@
-import sl.aleo;
 program test_sl.aleo;
 
 function dummy:

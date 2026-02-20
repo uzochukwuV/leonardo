@@ -1,188 +1,125 @@
-/**
- * Order Book Data Hook
- * Fetches real order book data from the Aleo blockchain
- */
+'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { aleoService, type OnChainTickInfo, type Settlement } from '@/lib/aleo-service';
-import { getTokenPair, tickToPrice, basisPointsToPrice } from '@/lib/token-pairs';
+import { fetchProgramTransitions, transitionsToDepth } from '@/lib/aleo-service';
+import { getTokenPair, tickToPrice } from '@/lib/token-pairs';
+import { config } from '@/lib/config';
 
 export interface TickDisplayInfo {
   tickId: number;
-  tickRange: {
-    min: number;
-    max: number;
-  };
+  tickRange: { min: number; max: number };
   buyOrderCount: number;
   sellOrderCount: number;
-  volume: number; // Estimated volume for visualization
-  orderCount: number; // Total orders at this tick
+  orderCount: number;
 }
 
 export interface RecentTrade {
   id: string;
-  side: 'buy' | 'sell';
-  tickRange: {
-    min: number;
-    max: number;
-  };
+  tickRange: { min: number; max: number };
   estimatedPrice: number;
   timestamp: number;
 }
 
 export interface OrderBookData {
-  orderBook: Record<number, TickDisplayInfo>;
+  bids: TickDisplayInfo[];       // tick-level depth entries for buy side
+  asks: TickDisplayInfo[];       // tick-level depth entries for sell side
+  buyOrders: number;             // actual number of buy order transitions on-chain
+  sellOrders: number;            // actual number of sell order transitions on-chain
   recentTrades: RecentTrade[];
   lastPrice: number;
-  volume24h: number;
   loading: boolean;
   error: string | null;
   refreshOrderBook: () => Promise<void>;
 }
 
-/**
- * Hook to fetch and manage order book data from the blockchain
- */
-export function useOrderBookData(tokenPairId: number = 1): OrderBookData {
-  const [orderBook, setOrderBook] = useState<Record<number, TickDisplayInfo>>({});
+export function useOrderBookData(tokenPairId: number = config.DEFAULT_TOKEN_PAIR): OrderBookData {
+  const [bids, setBids] = useState<TickDisplayInfo[]>([]);
+  const [asks, setAsks] = useState<TickDisplayInfo[]>([]);
+  const [buyOrders, setBuyOrders] = useState(0);
+  const [sellOrders, setSellOrders] = useState(0);
   const [recentTrades, setRecentTrades] = useState<RecentTrade[]>([]);
-  const [lastPrice, setLastPrice] = useState(15.0);
-  const [volume24h, setVolume24h] = useState(0);
+  const [lastPrice, setLastPrice] = useState<number>(config.BASE_PRICE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const tokenPair = getTokenPair(tokenPairId);
-  const tickSize = tokenPair?.tickSize || 100;
+  const tickSize = tokenPair?.tickSize ?? config.TICK_SIZE;
+  const baseTick = Math.floor((config.BASE_PRICE * 10000) / tickSize);
+  const minTick = Math.max(0, baseTick - 200);
+  const maxTick = baseTick + 200;
 
-  /**
-   * Fetch order book data from blockchain
-   */
-  const fetchOrderBook = useCallback(async () => {
-    if (!tokenPair) {
-      setError('Invalid token pair');
-      return;
-    }
-
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Fetch tick registry data
-      const tickRegistry = await aleoService.getTickRegistry(tokenPairId);
+      const [submitTxs, settleTxs] = await Promise.all([
+        fetchProgramTransitions(500, 'submit_order_with_escrow'),
+        fetchProgramTransitions(50, 'settle_match_public'),
+      ]);
 
-      // Convert to display format
-      const displayOrderBook: Record<number, TickDisplayInfo> = {};
+      // Count actual orders (transitions) for this pair
+      let buys = 0, sells = 0;
+      for (const tx of submitTxs) {
+        const inputs: string[] = tx.inputs ?? [];
+        const pair = parseInt(String(inputs[0] ?? '').replace(/u64$/i, '').trim(), 10);
+        if (pair !== tokenPairId) continue;
+        const isBuy = String(inputs[1] ?? '').trim() === 'true';
+        if (isBuy) buys++; else sells++;
+      }
+      setBuyOrders(buys);
+      setSellOrders(sells);
 
-      tickRegistry.forEach((tickInfo, tickId) => {
-        const totalOrders = tickInfo.buyOrderCount + tickInfo.sellOrderCount;
+      // Build tick-level depth
+      const { bids: rawBids, asks: rawAsks } = transitionsToDepth(
+        submitTxs, tokenPairId, minTick, maxTick
+      );
 
-        if (totalOrders > 0) {
-          const priceMin = tickToPrice(tickId, tickSize);
-          const priceMax = tickToPrice(tickId + 1, tickSize);
+      const toDisplay = (entries: typeof rawBids, isBid: boolean): TickDisplayInfo[] =>
+        entries.map((e) => ({
+          tickId: e.tickId,
+          tickRange: {
+            min: tickToPrice(e.tickId, tickSize),
+            max: tickToPrice(e.tickId + 1, tickSize),
+          },
+          buyOrderCount: isBid ? e.orderCount : 0,
+          sellOrderCount: isBid ? 0 : e.orderCount,
+          orderCount: e.orderCount,
+        }));
 
-          displayOrderBook[tickId] = {
-            tickId,
-            tickRange: {
-              min: priceMin,
-              max: priceMax,
-            },
-            buyOrderCount: tickInfo.buyOrderCount,
-            sellOrderCount: tickInfo.sellOrderCount,
-            volume: totalOrders * 500, // Estimated volume for visualization
-            orderCount: totalOrders,
-          };
-        }
-      });
+      const newBids = toDisplay(rawBids, true);
+      const newAsks = toDisplay(rawAsks, false);
+      setBids(newBids);
+      setAsks(newAsks);
 
-      setOrderBook(displayOrderBook);
+      // Last price from best bid/ask mid
+      if (newBids.length > 0 || newAsks.length > 0) {
+        const bestBid = newBids[0]?.tickRange.max ?? 0;
+        const bestAsk = newAsks[0]?.tickRange.min ?? 0;
+        if (bestBid > 0 && bestAsk > 0) setLastPrice((bestBid + bestAsk) / 2);
+        else if (bestBid > 0) setLastPrice(bestBid);
+        else if (bestAsk > 0) setLastPrice(bestAsk);
+      }
+
+      const trades: RecentTrade[] = settleTxs.map((tx) => ({
+        id: tx.transaction_id ?? tx.id ?? '',
+        tickRange: { min: 0, max: 0 },
+        estimatedPrice: 0,
+        timestamp: (tx.block_timestamp ?? 0) > 0 ? tx.block_timestamp * 1000 : Date.now(),
+      }));
+      setRecentTrades(trades);
     } catch (err) {
-      console.error('Error fetching order book:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch order book');
     } finally {
       setLoading(false);
     }
-  }, [tokenPairId, tokenPair, tickSize]);
+  }, [tokenPairId, minTick, maxTick, tickSize]);
 
-  /**
-   * Fetch recent settlements/trades
-   */
-  const fetchRecentTrades = useCallback(async () => {
-    try {
-      const settlements = await aleoService.getRecentSettlements(tokenPairId, 20);
-
-      const trades: RecentTrade[] = settlements.map((settlement, index) => {
-        const price = basisPointsToPrice(settlement.executionPrice);
-        const tickId = Math.floor(settlement.executionPrice / tickSize);
-        const priceMin = tickToPrice(tickId, tickSize);
-        const priceMax = tickToPrice(tickId + 1, tickSize);
-
-        // Determine side based on index (alternating for demo)
-        const side = index % 2 === 0 ? 'buy' : 'sell';
-
-        return {
-          id: settlement.settlementId,
-          side,
-          tickRange: {
-            min: priceMin,
-            max: priceMax,
-          },
-          estimatedPrice: price,
-          timestamp: settlement.timestamp,
-        };
-      });
-
-      setRecentTrades(trades);
-
-      // Update last price from most recent trade
-      if (trades.length > 0) {
-        setLastPrice(trades[0].estimatedPrice);
-      }
-
-      // Calculate 24h volume (simplified)
-      const now = Date.now();
-      const oneDayAgo = now - 24 * 60 * 60 * 1000;
-      const recentVolume = trades
-        .filter(t => t.timestamp > oneDayAgo)
-        .length * 1000; // Estimated
-
-      setVolume24h(recentVolume);
-    } catch (err) {
-      console.error('Error fetching recent trades:', err);
-    }
-  }, [tokenPairId, tickSize]);
-
-  /**
-   * Refresh all order book data
-   */
-  const refreshOrderBook = useCallback(async () => {
-    await Promise.all([
-      fetchOrderBook(),
-      fetchRecentTrades(),
-    ]);
-  }, [fetchOrderBook, fetchRecentTrades]);
-
-  /**
-   * Initial load and periodic refresh
-   */
   useEffect(() => {
-    // Initial fetch
-    refreshOrderBook();
-
-    // Set up periodic refresh every 30 seconds
-    const interval = setInterval(() => {
-      refreshOrderBook();
-    }, 30000);
-
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
-  }, [refreshOrderBook]);
+  }, [fetchData]);
 
-  return {
-    orderBook,
-    recentTrades,
-    lastPrice,
-    volume24h,
-    loading,
-    error,
-    refreshOrderBook,
-  };
+  return { bids, asks, buyOrders, sellOrders, recentTrades, lastPrice, loading, error, refreshOrderBook: fetchData };
 }

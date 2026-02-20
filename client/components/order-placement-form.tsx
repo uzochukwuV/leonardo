@@ -1,361 +1,413 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
-import { WalletAdapterNetwork, Transaction } from '@demox-labs/aleo-wallet-adapter-base';
+import React, { useState, useEffect } from 'react';
+import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
+import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
-import { TokenPairSelector } from '@/components/token-pair-selector';
-import { getTokenPair, priceToBasisPoints, priceToTick, calculateEscrowAmount } from '@/lib/token-pairs';
+import {
+  getAllActiveTokenPairs,
+  getTokenPair,
+  calculateEscrowAmount,
+  priceToBasisPoints,
+} from '@/lib/token-pairs';
 import { config } from '@/lib/config';
-import { Lock, AlertCircle } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown } from 'lucide-react';
+import { useSubmitOrder } from '@/hooks/use-submit-order';
 
-export function OrderPlacementForm() {
-  const { publicKey, connected, requestTransaction, wallet } = useWallet();
+interface OrderPlacementFormProps {
+  selectedPairId: number;
+  onPairChange: (id: number) => void;
+  prefillPrice?: number;
+  onPrefillConsumed?: () => void;
+}
 
-  const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
+const EXPIRY_OPTIONS = [
+  { label: 'No expiry', value: 0 },
+  { label: '~10 min', value: 30 },
+  { label: '~1 hour', value: 180 },
+  { label: '~1 day', value: 4320 },
+] as const;
+
+export function OrderPlacementForm({
+  selectedPairId,
+  onPairChange,
+  prefillPrice,
+  onPrefillConsumed,
+}: OrderPlacementFormProps) {
+  const { address } = useWallet();
+  const { setVisible } = useWalletModal();
+  const connected = !!address;
+
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
-  const [quantity, setQuantity] = useState('100');
   const [limitPrice, setLimitPrice] = useState(config.BASE_PRICE.toString());
-  const [tickRangeWidth, setTickRangeWidth] = useState((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const [txId, setTxId] = useState<string | null>(null);
+  const [quantity, setQuantity] = useState('');
+  const [rangeWidth, setRangeWidth] = useState('0.50');
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [showPairs, setShowPairs] = useState(false);
 
-  const selectedPair = getTokenPair(selectedPairId);
+  const { submitOrder, step, stepLabel, txId, error, reset } = useSubmitOrder();
+  const submitting = step !== 'idle' && step !== 'done';
+  const success = step === 'done';
 
-  if (!selectedPair) {
-    return <div>Invalid token pair</div>;
-  }
+  const pair = getTokenPair(selectedPairId);
+  const activePairs = getAllActiveTokenPairs();
 
-  // Calculate tick bounds based on limit price and range
-  const limit = parseFloat(limitPrice) || config.BASE_PRICE;
-  const rangeWidth = parseFloat(tickRangeWidth) || (config.MAX_TICK_RANGE * config.TICK_SIZE / 10000);
-  const tickLower = Math.max(selectedPair.minPrice / 10000, limit - rangeWidth / 2);
-  const tickUpper = tickLower + rangeWidth;
+  // Consume prefill price from order book click
+  useEffect(() => {
+    if (prefillPrice !== undefined && prefillPrice > 0) {
+      setLimitPrice(prefillPrice.toFixed(4));
+      onPrefillConsumed?.();
+    }
+  }, [prefillPrice, onPrefillConsumed]);
+
+  if (!pair) return null;
+
+  const isBuy = side === 'buy';
+  const escrowToken = isBuy ? pair.quoteToken : pair.baseToken;
+  const price = parseFloat(limitPrice) || 0;
+  const qty = parseFloat(quantity) || 0;
+  const rw = parseFloat(rangeWidth) || 0.5;
+
+  const tickLowerUsd = Math.max(pair.minPrice / 10000, price - rw / 2);
+  const tickUpperUsd = tickLowerUsd + rw;
+
+  // Live escrow calculation
+  const quantityRaw = BigInt(Math.floor(qty * Math.pow(10, pair.baseToken.decimals)));
+  const priceBps = BigInt(priceToBasisPoints(price));
+  const escrowRaw =
+    price > 0 && qty > 0 ? calculateEscrowAmount(isBuy, quantityRaw, priceBps) : 0n;
+  const escrowDisplay = (Number(escrowRaw) / Math.pow(10, escrowToken.decimals)).toFixed(4);
+  const valueUsd = (qty * price).toFixed(2);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setSuccess(false);
-    setTxId(null);
+    reset();
+    if (!price || price <= 0 || !qty || qty <= 0) return;
 
-    if (!connected || !publicKey) {
-      setError('Please connect your wallet first');
-      return;
-    }
+    const result = await submitOrder({
+      pairId: selectedPairId,
+      isBuy,
+      tickLowerUsd,
+      tickUpperUsd,
+      limitPriceUsd: price,
+      quantity: qty,
+      expiresAt,
+    });
 
-    try {
-      const qty = parseFloat(quantity);
-      const price = parseFloat(limitPrice);
-
-      if (!qty || qty <= 0) {
-        setError('Please enter a valid quantity');
-        return;
-      }
-
-      if (!price || price <= 0) {
-        setError('Please enter a valid limit price');
-        return;
-      }
-
-      if (price < tickLower || price > tickUpper) {
-        setError('Limit price must be within the tick range');
-        return;
-      }
-
-      setSubmitting(true);
-
-      // Convert to contract format
-      const tokenPairId = selectedPairId;
-      const isBuy = side === 'buy';
-      const tickLowerId = priceToTick(tickLower, selectedPair.tickSize);
-      const tickUpperId = priceToTick(tickUpper, selectedPair.tickSize);
-      const limitPriceBps = priceToBasisPoints(price);
-      const quantityRaw = Math.floor(qty * Math.pow(10, selectedPair.baseToken.decimals));
-      const escrowAmount = calculateEscrowAmount(isBuy, quantityRaw, limitPriceBps);
-
-      // Get current timestamp (in seconds, convert to u32)
-      const timestamp = Math.floor(Date.now() / 1000);
-
-      // Create transaction inputs
-      const inputs = [
-        `${tokenPairId}u64`,           // token_pair_id
-        `${isBuy}`,                     // is_buy
-        `${tickLowerId}u64`,            // tick_lower
-        `${tickUpperId}u64`,            // tick_upper
-        `${timestamp}u32`,              // timestamp
-        `${limitPriceBps}u64`,          // limit_price
-        `${quantityRaw}u64`,            // quantity
-      ];
-
-      console.log('Submitting order:', {
-        tokenPairId,
-        isBuy,
-        tickLowerId,
-        tickUpperId,
-        limitPriceBps,
-        quantityRaw,
-        inputs,
-      });
-
-      // Create and submit transaction
-      const transaction = Transaction.createTransaction(
-        publicKey,
-        WalletAdapterNetwork.TestnetBeta,
-        config.CONTRACT_PROGRAM_ID,
-        'submit_tick_order',
-        inputs,
-        config.DEFAULT_FEE
-      );
-
-      if (!requestTransaction) {
-        throw new Error('Wallet does not support transaction requests');
-      }
-
-      const transactionId = await requestTransaction(transaction);
-
-      setSuccess(true);
-      setTxId(transactionId);
+    if (result) {
       setQuantity('');
-      setLimitPrice(config.BASE_PRICE.toString());
-      setTickRangeWidth((config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString());
-
-      setTimeout(() => {
-        setSuccess(false);
-        setTxId(null);
-      }, 10000);
-    } catch (err) {
-      console.error('Order submission error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to place order');
-    } finally {
-      setSubmitting(false);
+      setTimeout(reset, 12_000);
     }
   };
 
-  return (
-    <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
-      <h2 className="text-base sm:text-lg font-bold text-foreground mb-6">
-        Place Order
-      </h2>
+  // Step indicator items
+  const stepItems = [
+    { id: 'approving', label: `Approve ${escrowToken.symbol}` },
+    { id: 'submitting', label: 'Submit order' },
+    { id: 'polling', label: 'Confirming' },
+  ];
 
-      {!connected && (
-        <div className="mb-6 p-4 rounded-lg bg-accent/10 border border-accent/30 flex gap-3">
-          <AlertCircle className="w-5 h-5 text-accent flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-foreground">
-            Connect your wallet to place orders
-          </p>
+  return (
+    <div className="rounded-lg border border-border bg-card flex flex-col h-full">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-border">
+        <h2 className="text-sm font-bold text-foreground">Place Order</h2>
+      </div>
+
+      {/* Step indicator — visible during submission */}
+      {submitting && (
+        <div className="px-4 py-2 bg-primary/5 border-b border-border">
+          <div className="flex items-center gap-1 flex-wrap">
+            {stepItems.map((s, i) => {
+              const isDone =
+                (s.id === 'approving' && (step === 'submitting' || step === 'polling')) ||
+                (s.id === 'submitting' && step === 'polling');
+              const isActive = s.id === step;
+              return (
+                <React.Fragment key={s.id}>
+                  <div
+                    className={`flex items-center gap-1 text-xs font-medium ${
+                      isDone
+                        ? 'text-primary'
+                        : isActive
+                        ? 'text-foreground'
+                        : 'text-muted-foreground'
+                    }`}
+                  >
+                    {isDone ? (
+                      <CheckCircle2 className="w-3 h-3 text-primary" />
+                    ) : isActive ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <span className="w-3 h-3 rounded-full border border-muted-foreground/40 inline-block" />
+                    )}
+                    {s.label}
+                  </div>
+                  {i < stepItems.length - 1 && (
+                    <span className="text-muted-foreground/40 text-xs">→</span>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Token Pair Selection */}
-        <div>
-          <label className="block text-sm font-semibold text-foreground mb-3">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Token Pair dropdown */}
+        <div className="relative">
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
             Token Pair
           </label>
-          <TokenPairSelector
-            selectedPairId={selectedPairId}
-            onSelectPair={setSelectedPairId}
+          <button
+            type="button"
+            onClick={() => setShowPairs((v) => !v)}
+            className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border border-border bg-input text-sm font-semibold hover:bg-muted/30 transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <span>{pair.baseToken.icon}</span>
+              {pair.name}
+            </span>
+            <ChevronDown
+              className={`w-4 h-4 text-muted-foreground transition-transform ${
+                showPairs ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+          {showPairs && (
+            <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+              {activePairs.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    onPairChange(p.id);
+                    setShowPairs(false);
+                  }}
+                  className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors text-left ${
+                    p.id === selectedPairId
+                      ? 'bg-primary/10 text-primary font-semibold'
+                      : 'text-foreground'
+                  }`}
+                >
+                  <span>{p.baseToken.icon}</span>
+                  {p.name}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    tick ${(p.tickSize / 10000).toFixed(2)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Buy / Sell */}
+        <div>
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+            Side
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['buy', 'sell'] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setSide(s)}
+                className={`py-2.5 rounded-lg font-bold text-sm capitalize transition-all ${
+                  side === s
+                    ? s === 'buy'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-destructive text-destructive-foreground'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Limit Price — private */}
+        <div>
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+            <span className="flex items-center gap-1">
+              Limit Price
+              <Lock className="w-3 h-3" />
+              <span className="font-normal normal-case text-muted-foreground/50">(encrypted)</span>
+            </span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+              $
+            </span>
+            <input
+              type="number"
+              step="0.0001"
+              min={pair.minPrice / 10000}
+              max={pair.maxPrice / 10000}
+              value={limitPrice}
+              onChange={(e) => setLimitPrice(e.target.value)}
+              disabled={!connected || submitting}
+              placeholder={config.BASE_PRICE.toString()}
+              className="w-full pl-7 pr-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
+            />
+          </div>
+          {price > 0 && (
+            <p className="text-xs text-muted-foreground/50 mt-1">
+              Public range: ${tickLowerUsd.toFixed(2)} – ${tickUpperUsd.toFixed(2)}
+            </p>
+          )}
+        </div>
+
+        {/* Quantity — private */}
+        <div>
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+            <span className="flex items-center gap-1">
+              Quantity ({pair.baseToken.symbol})
+              <Lock className="w-3 h-3" />
+              <span className="font-normal normal-case text-muted-foreground/50">(encrypted)</span>
+            </span>
+          </label>
+          <input
+            type="number"
+            step="0.000001"
+            min="0"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            disabled={!connected || submitting}
+            placeholder="0.000000"
+            className="w-full px-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
           />
         </div>
 
-        {/* Side Selection */}
+        {/* Range Width — public */}
         <div>
-          <label className="block text-sm font-semibold text-foreground mb-3">
-            Order Side
+          <label className="block text-xs font-semibold text-muted-foreground mb-1 uppercase tracking-wide">
+            Price Range Width{' '}
+            <span className="font-normal normal-case text-muted-foreground/50">(public)</span>
           </label>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setSide('buy')}
-              className={`py-3 px-4 rounded-lg font-semibold transition-all ${
-                side === 'buy'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
-              }`}
-            >
-              Buy
-            </button>
-            <button
-              type="button"
-              onClick={() => setSide('sell')}
-              className={`py-3 px-4 rounded-lg font-semibold transition-all ${
-                side === 'sell'
-                  ? 'bg-destructive text-destructive-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
-              }`}
-            >
-              Sell
-            </button>
-          </div>
-        </div>
-
-        {/* Public Tick Range */}
-        <div>
-          <label className="block text-sm font-semibold text-foreground mb-2">
-            Public Tick Range
-          </label>
-          <p className="text-xs text-muted-foreground mb-3">
-            Other traders see this range (exact prices encrypted)
+          <p className="text-xs text-muted-foreground/50 mb-2">
+            Wider = more privacy. Others see your order in ±${(rw / 2).toFixed(2)} of your price.
           </p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Min</p>
-              <input
-                type="text"
-                value={`$${tickLower.toFixed(2)}`}
-                disabled
-                className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm font-mono text-muted-foreground"
-              />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Max</p>
-              <input
-                type="text"
-                value={`$${tickUpper.toFixed(2)}`}
-                disabled
-                className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm font-mono text-muted-foreground"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Range Width */}
-        <div>
-          <label className="block text-sm font-semibold text-foreground mb-2">
-            Tick Range Width (Public)
-          </label>
           <div className="flex items-center gap-3">
             <input
               type="range"
               min="0.01"
-              max={(config.MAX_TICK_RANGE * config.TICK_SIZE / 10000).toString()}
+              max={((pair.maxTickRange * pair.tickSize) / 10000).toString()}
               step="0.01"
-              value={tickRangeWidth}
-              onChange={(e) => setTickRangeWidth(e.target.value)}
-              className="flex-1"
+              value={rangeWidth}
+              onChange={(e) => setRangeWidth(e.target.value)}
+              className="flex-1 accent-primary"
             />
-            <span className="text-sm font-mono font-bold text-accent min-w-fit">
-              ${parseFloat(tickRangeWidth).toFixed(2)}
+            <span className="text-xs font-mono font-bold text-primary w-16 text-right">
+              ±${(rw / 2).toFixed(2)}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Wider ranges provide more privacy
-          </p>
         </div>
 
-        {/* Private Limit Price */}
+        {/* Expiry */}
         <div>
-          <label className="block text-sm font-semibold text-foreground mb-2">
-            <span className="flex items-center gap-2">
-              Exact Limit Price (Private)
-              <Lock className="w-4 h-4 text-primary" />
-            </span>
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+            Expiry
           </label>
-          <p className="text-xs text-muted-foreground mb-3">
-            Only you see this value. It's encrypted on-chain.
-          </p>
-          <input
-            type="number"
-            step="0.01"
-            min={(selectedPair.minPrice / 10000).toString()}
-            max={(selectedPair.maxPrice / 10000).toString()}
-            value={limitPrice}
-            onChange={(e) => setLimitPrice(e.target.value)}
-            disabled={!connected}
-            placeholder={config.BASE_PRICE.toString()}
-            className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-          />
-          <p className="text-xs text-muted-foreground mt-2">
-            ${Math.abs(parseFloat(limitPrice) - config.BASE_PRICE).toFixed(4)} from market
-          </p>
+          <div className="grid grid-cols-4 gap-1">
+            {EXPIRY_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setExpiresAt(opt.value)}
+                className={`py-1.5 text-xs rounded-lg border transition-colors ${
+                  expiresAt === opt.value
+                    ? 'border-primary bg-primary/10 text-primary font-semibold'
+                    : 'border-border bg-muted/30 text-muted-foreground hover:bg-muted/50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Quantity */}
-        <div>
-          <label className="block text-sm font-semibold text-foreground mb-2">
-            <span className="flex items-center gap-2">
-              Quantity (Private)
-              <Lock className="w-4 h-4 text-primary" />
-            </span>
-          </label>
-          <p className="text-xs text-muted-foreground mb-3">
-            Only visible after settlement.
-          </p>
-          <input
-            type="number"
-            step="1"
-            min="1"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            disabled={!connected}
-            placeholder="100"
-            className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-          />
-          <p className="text-xs text-muted-foreground mt-2">
-            Estimated value:{' '}
-            <span className="font-mono font-bold text-accent">
-              ${(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)} {selectedPair.quoteToken.symbol}
-            </span>
-          </p>
-        </div>
+        {/* Live order summary */}
+        {qty > 0 && price > 0 && (
+          <div className="rounded-lg bg-muted/30 border border-border p-3 space-y-2">
+            <p className="text-xs font-semibold text-foreground">Order Summary</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+              <span className="text-muted-foreground">Order value</span>
+              <span className="font-mono font-bold text-foreground text-right">
+                ${valueUsd} {pair.quoteToken.symbol}
+              </span>
+              <span className="text-muted-foreground">Escrow required</span>
+              <span
+                className={`font-mono font-bold text-right ${
+                  isBuy ? 'text-primary' : 'text-destructive'
+                }`}
+              >
+                {escrowDisplay} {escrowToken.symbol}
+              </span>
+              <span className="text-muted-foreground">Public range</span>
+              <span className="font-mono text-right text-muted-foreground">
+                ${tickLowerUsd.toFixed(2)}–${tickUpperUsd.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        )}
 
-        {/* Error Message */}
+        {/* 2-step notice */}
+        {connected && !submitting && !success && (
+          <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            Requires 2 wallet confirmations: approve escrow, then submit order.
+          </p>
+        )}
+
         {error && (
           <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30">
-            <p className="text-sm text-destructive">{error}</p>
+            <p className="text-xs text-destructive">{error}</p>
           </div>
         )}
 
-        {/* Success Message */}
         {success && (
-          <div className="p-3 rounded-lg bg-primary/10 border border-primary/30">
-            <p className="text-sm text-primary font-semibold">
-              Order placed successfully! Waiting for settlement.
-            </p>
-            {txId && (
-              <p className="text-xs text-muted-foreground mt-1 font-mono break-all">
-                TX: {txId}
-              </p>
-            )}
+          <div className="p-3 rounded-lg bg-primary/10 border border-primary/30 flex gap-2 items-start">
+            <CheckCircle2 className="w-4 h-4 text-primary mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs text-primary font-semibold">Order placed on-chain!</p>
+              {txId && (
+                <p className="text-xs text-muted-foreground mt-1 font-mono break-all">{txId}</p>
+              )}
+            </div>
           </div>
         )}
+      </div>
 
-        {/* Submit Button */}
-        <Button
-          type="submit"
-          disabled={!connected || submitting}
-          className={`w-full py-3 font-semibold rounded-lg transition-all ${
-            side === 'buy'
-              ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
-              : 'bg-destructive hover:bg-destructive/90 text-destructive-foreground'
-          }`}
-        >
-          {submitting ? (
-            'Placing Order...'
-          ) : (
-            <>
-              {side === 'buy' ? 'Place Buy Order' : 'Place Sell Order'} •{' '}
-              {(parseFloat(quantity || '0') * parseFloat(limitPrice || '0')).toFixed(2)}{' '}
-              {selectedPair.quoteToken.symbol}
-            </>
-          )}
-        </Button>
-      </form>
-
-      {/* Privacy Explainer */}
-      <div className="mt-6 p-4 rounded-lg bg-muted/30 border border-border space-y-2">
-        <p className="text-xs font-semibold text-foreground flex items-center gap-2">
-          <Lock className="w-3.5 h-3.5" />
-          How Privacy Works
-        </p>
-        <ul className="text-xs text-muted-foreground space-y-1 ml-5 list-disc">
-          <li>Your exact price and quantity are encrypted with zero-knowledge</li>
-          <li>Others only see that an order exists in the tick range</li>
-          <li>Matching happens privately on the Aleo network</li>
-          <li>Settlement details visible only to counterparties</li>
-        </ul>
+      {/* Fixed submit button */}
+      <div className="p-4 border-t border-border">
+        {!connected ? (
+          <Button type="button" onClick={() => setVisible(true)} className="w-full gap-2">
+            <Wallet className="w-4 h-4" />
+            Connect Wallet to Trade
+          </Button>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <Button
+              type="submit"
+              disabled={submitting || !qty || !price}
+              className={`w-full font-bold py-3 transition-all ${
+                isBuy
+                  ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                  : 'bg-destructive hover:bg-destructive/90 text-destructive-foreground'
+              }`}
+            >
+              {submitting ? (
+                <span className="flex items-center gap-2 justify-center">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {stepLabel[step]}
+                </span>
+              ) : (
+                `${isBuy ? 'Buy' : 'Sell'} ${pair.baseToken.symbol}`
+              )}
+            </Button>
+          </form>
+        )}
       </div>
     </div>
   );

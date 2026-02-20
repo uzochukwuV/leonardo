@@ -4,8 +4,19 @@ import { Header } from '@/components/header';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
+import { useEffect } from 'react';
 
 export default function Home() {
+  const { address, requestRecords, decrypt, executeTransaction } = useWallet();
+
+  useEffect(() => {
+    if (address) {
+      requestRecords('private_orderbook_v4.aleo').then((records) => {
+        console.log(records);
+      });
+    }
+  }, [address]);
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />

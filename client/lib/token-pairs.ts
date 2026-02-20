@@ -7,7 +7,7 @@ export interface TokenInfo {
   symbol: string;
   name: string;
   decimals: number;
-  tokenId: string; // Aleo program ID for this token
+  tokenId: string; // On-chain token_id (field literal), e.g. "1field"
   icon?: string;
   color?: string;
 }
@@ -30,7 +30,8 @@ export const TOKENS: Record<string, TokenInfo> = {
     symbol: 'ALEO',
     name: 'Aleo',
     decimals: 6,
-    tokenId: 'credits.aleo',
+    // Testnet token registered via demo.sh (BASE_TOKEN_ID=7001field)
+    tokenId: '7001field',
     icon: '🅰️',
     color: '#00D4AA',
   },
@@ -38,7 +39,8 @@ export const TOKENS: Record<string, TokenInfo> = {
     symbol: 'USDC',
     name: 'USD Coin',
     decimals: 6,
-    tokenId: 'usdc.aleo',
+    // Testnet token registered via demo.sh (QUOTE_TOKEN_ID=7002field)
+    tokenId: '7002field',
     icon: '💵',
     color: '#2775CA',
   },
@@ -79,13 +81,13 @@ export const TOKEN_PAIRS: Record<number, TokenPair> = {
     minPrice: 10000, // $1.00
     maxPrice: 10000000, // $1000.00
     maxTickRange: 50, // 50 ticks = $0.50 range
-    active: true,
+    active: false, // Pair 1 on testnet uses 1field/2field tokens owned by different admin
   },
   2: {
     id: 2,
-    name: 'ALEO/USDT',
+    name: 'ALEO/USDC',
     baseToken: TOKENS.ALEO,
-    quoteToken: TOKENS.USDT,
+    quoteToken: TOKENS.USDC,
     tickSize: 100, // $0.01
     minPrice: 10000, // $1.00
     maxPrice: 10000000, // $1000.00
@@ -138,17 +140,21 @@ export function getToken(symbol: string): TokenInfo | undefined {
 }
 
 /**
- * Calculate escrow amount required for an order
+ * Calculate escrow amount required for an order.
+ * Accepts and returns bigint to match the contract's u128 arithmetic.
+ *
+ * - Buy  order: escrows quote token → quantity * limitPriceBps / 10000
+ * - Sell order: escrows base token  → quantity (raw units)
  */
 export function calculateEscrowAmount(
   isBuy: boolean,
-  quantity: number,
-  limitPrice: number
-): number {
+  quantity: bigint,
+  limitPriceBps: bigint
+): bigint {
   if (isBuy) {
     // Buyer escrows quote currency (e.g., USDC)
-    // Amount = quantity * price / 10000 (basis points to decimal)
-    return Math.floor((quantity * limitPrice) / 10000);
+    // escrow = quantity * limitPriceBps / 10000
+    return (quantity * limitPriceBps) / BigInt(10000);
   } else {
     // Seller escrows base currency (e.g., ALEO)
     return quantity;

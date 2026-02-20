@@ -1,39 +1,42 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useWallet } from '@demox-labs/aleo-wallet-adapter-react';
-import { useWalletModal } from '@demox-labs/aleo-wallet-adapter-reactui';
+import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
+import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
 import { Copy, ExternalLink, Wallet, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
+import { useOrderBookData } from '@/hooks/use-order-book-data';
+import { config } from '@/lib/config';
 
 export function Header() {
-  const { wallet, publicKey, connected, connecting, disconnect } = useWallet();
+  const { wallet, address, connected, connecting, disconnect } = useWallet();
   const { setVisible } = useWalletModal();
   const [showMenu, setShowMenu] = useState(false);
   const [copied, setCopied] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const shortAddress = publicKey
-    ? `${publicKey.slice(0, 8)}...${publicKey.slice(-8)}`
+  // Live price from chain
+  const { lastPrice } = useOrderBookData(config.DEFAULT_TOKEN_PAIR);
+
+  const shortAddress = address
+    ? `${address.slice(0, 8)}...${address.slice(-8)}`
     : '';
 
   const copyAddress = () => {
-    if (publicKey) {
-      navigator.clipboard.writeText(publicKey);
+    if (address) {
+      navigator.clipboard.writeText(address);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setShowMenu(false);
       }
     };
-
     if (showMenu) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -43,16 +46,14 @@ export function Header() {
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
       <div className="px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-        {/* Logo & Navigation */}
+        {/* Logo */}
         <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
           <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-br from-primary to-accent">
             <span className="text-primary-foreground font-bold text-sm">Ⓟ</span>
           </div>
           <div>
             <h1 className="text-lg font-bold text-foreground">Pteaker</h1>
-            <p className="text-xs text-muted-foreground">
-              Zero-Knowledge Trading
-            </p>
+            <p className="text-xs text-muted-foreground">Zero-Knowledge Trading</p>
           </div>
         </Link>
 
@@ -71,15 +72,17 @@ export function Header() {
           </a>
         </div>
 
-        {/* Market Info */}
+        {/* Live Market Info */}
         <div className="hidden lg:flex items-center gap-6">
           <div className="text-right">
             <p className="text-xs text-muted-foreground">Last Price</p>
-            <p className="text-sm font-mono text-primary">$15.02</p>
+            <p className="text-sm font-mono text-primary">
+              {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
+            </p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-muted-foreground">24h Volume</p>
-            <p className="text-sm font-mono text-accent">125K ALEO</p>
+            <p className="text-xs text-muted-foreground">Network</p>
+            <p className="text-sm font-mono text-accent capitalize">{config.NETWORK}</p>
           </div>
         </div>
 
@@ -95,9 +98,7 @@ export function Header() {
               <span className="hidden sm:inline">
                 {connecting ? 'Connecting...' : 'Connect Wallet'}
               </span>
-              <span className="sm:hidden">
-                {connecting ? '...' : 'Connect'}
-              </span>
+              <span className="sm:hidden">{connecting ? '...' : 'Connect'}</span>
             </Button>
           ) : (
             <div className="relative" ref={menuRef}>
@@ -106,7 +107,7 @@ export function Header() {
                 variant="outline"
                 className="gap-2"
               >
-                <span className="inline-flex w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                <span className="inline-flex w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                 <span className="hidden sm:inline">{shortAddress}</span>
                 <span className="sm:hidden text-xs">Connected</span>
                 <ChevronDown className={`w-3 h-3 transition-transform ${showMenu ? 'rotate-180' : ''}`} />
@@ -128,7 +129,7 @@ export function Header() {
                     </div>
                     <div className="flex items-center justify-between gap-2 p-3 bg-background rounded-lg">
                       <code className="text-xs font-mono text-foreground truncate flex-1">
-                        {publicKey}
+                        {address}
                       </code>
                       <button
                         onClick={copyAddress}
@@ -143,9 +144,9 @@ export function Header() {
                   {/* Network Badge */}
                   <div className="px-4 py-3 border-b border-border bg-background/50">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                      <span className="text-xs font-medium text-muted-foreground">
-                        Aleo Testnet
+                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                      <span className="text-xs font-medium text-muted-foreground capitalize">
+                        Aleo {config.NETWORK}
                       </span>
                     </div>
                   </div>
@@ -163,15 +164,12 @@ export function Header() {
                       </Button>
                     </Link>
                     <a
-                      href={`https://explorer.aleo.org/address/${publicKey}`}
+                      href={`https://explorer.aleo.org/address/${address}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="block"
                     >
-                      <Button
-                        variant="ghost"
-                        className="w-full justify-start gap-2 text-sm h-9"
-                      >
+                      <Button variant="ghost" className="w-full justify-start gap-2 text-sm h-9">
                         <ExternalLink className="w-4 h-4" />
                         View on Explorer
                       </Button>
@@ -181,10 +179,7 @@ export function Header() {
                   {/* Disconnect */}
                   <div className="border-t border-border p-3 bg-background/50">
                     <button
-                      onClick={() => {
-                        disconnect();
-                        setShowMenu(false);
-                      }}
+                      onClick={() => { disconnect(); setShowMenu(false); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-destructive hover:bg-destructive/10 rounded transition-colors font-medium flex items-center gap-2"
                     >
                       <ExternalLink className="w-4 h-4 rotate-180" />

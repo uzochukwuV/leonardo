@@ -1,49 +1,42 @@
 'use client';
 
-import { ReactNode, useMemo, useState, useEffect } from 'react';
-import { WalletProvider as AleoWalletProvider } from '@demox-labs/aleo-wallet-adapter-react';
-import { WalletModalProvider } from '@demox-labs/aleo-wallet-adapter-reactui';
-import { LeoWalletAdapter } from '@demox-labs/aleo-wallet-adapter-leo';
-import {
-  DecryptPermission,
-  WalletAdapterNetwork,
-} from '@demox-labs/aleo-wallet-adapter-base';
+import { ReactNode, useMemo } from 'react';
+import { AleoWalletProvider as ProvableWalletProvider } from '@provablehq/aleo-wallet-adaptor-react';
+import { WalletModalProvider } from '@provablehq/aleo-wallet-adaptor-react-ui';
+import { LeoWalletAdapter } from '@provablehq/aleo-wallet-adaptor-leo';
+import { PuzzleWalletAdapter } from '@provablehq/aleo-wallet-adaptor-puzzle';
+import { ShieldWalletAdapter } from '@provablehq/aleo-wallet-adaptor-shield';
+import { DecryptPermission } from '@provablehq/aleo-wallet-adaptor-core';
+import { Network } from '@provablehq/aleo-types';
+import { PuzzleWalletProvider } from '@puzzlehq/sdk';
+import '@provablehq/aleo-wallet-adaptor-react-ui/dist/styles.css';
+import { config } from '@/lib/config';
 
-// Import default wallet adapter styles
-import '@demox-labs/aleo-wallet-adapter-reactui/styles.css';
-
-/**
- * WalletProvider component wraps the app to manage Aleo wallet connection globally.
- *
- * Uses the official Aleo Wallet Adapter:
- * - Supports Leo Wallet and other Aleo-compatible wallets
- * - Provides wallet connection modal UI
- * - Handles signing, decryption, and transaction requests
- * - Auto-reconnects on page load if previously connected
- */
 export function WalletProvider({ children }: { children: ReactNode }) {
-  // Initialize wallet adapters
   const wallets = useMemo(
     () => [
-      new LeoWalletAdapter({
-        appName: 'Aleo Order Book',
-      }),
+      new PuzzleWalletAdapter({ appName: 'Pteaker Order Book' }),
+      new ShieldWalletAdapter({ appName: 'Pteaker Order Book' }),
+      new LeoWalletAdapter({ appName: 'Pteaker Order Book' }),
     ],
     []
   );
 
-  wallets[0].connect(DecryptPermission.NoDecrypt, WalletAdapterNetwork.TestnetBeta)
-
   return (
-    <AleoWalletProvider
-      wallets={wallets}
-      decryptPermission={DecryptPermission.NoDecrypt}
-      network={WalletAdapterNetwork.TestnetBeta}
-      autoConnect={true}
-    >
-      <WalletModalProvider>
-        {children}
-      </WalletModalProvider>
-    </AleoWalletProvider>
+    // PuzzleWalletProvider sets up React Query + WebSocket context that
+    // useRecords / useEvents require (window.aleo.puzzleWalletClient).
+    <PuzzleWalletProvider>
+      <ProvableWalletProvider
+        wallets={wallets}
+        decryptPermission={DecryptPermission.AutoDecrypt}
+        network={config.NETWORK === 'testnet' ? Network.TESTNET : Network.MAINNET}
+        autoConnect
+        programs={[config.CONTRACT_PROGRAM_ID, 'token_registry.aleo', 'credits.aleo']}
+      >
+        <WalletModalProvider>
+          {children}
+        </WalletModalProvider>
+      </ProvableWalletProvider>
+    </PuzzleWalletProvider>
   );
 }

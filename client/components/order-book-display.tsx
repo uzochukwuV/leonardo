@@ -1,249 +1,152 @@
 'use client';
 
-import { useState } from 'react';
-import { useOrderBookData, type TickDisplayInfo } from '@/hooks/use-order-book-data';
-import { useOrderBook, type TickInfo } from '@/hooks/use-order-book';
+import { type TickDisplayInfo, type OrderBookData } from '@/hooks/use-order-book-data';
+import { RotateCw, AlertCircle, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { RotateCw, AlertCircle, Database } from 'lucide-react';
-import { config } from '@/lib/config';
+import { getTokenPair } from '@/lib/token-pairs';
 
-export function OrderBookDisplay() {
-  const [selectedPairId] = useState(config.DEFAULT_TOKEN_PAIR);
-  const [useRealData, setUseRealData] = useState(true);
+interface OrderBookDisplayProps {
+  selectedPairId: number;
+  onPriceClick: (priceUsd: number) => void;
+  data: OrderBookData;
+}
 
-  // Try to fetch real blockchain data
-  const {
-    orderBook: realOrderBook,
-    lastPrice: realLastPrice,
-    volume24h: realVolume24h,
-    loading: realLoading,
-    error: realError,
-    refreshOrderBook: realRefresh,
-  } = useOrderBookData(selectedPairId);
+export function OrderBookDisplay({ selectedPairId, onPriceClick, data }: OrderBookDisplayProps) {
+  const { bids, asks, buyOrders, sellOrders, lastPrice, loading, error, refreshOrderBook } = data;
 
-  // Fallback to mock data
-  const {
-    orderBook: mockOrderBook,
-    lastPrice: mockLastPrice,
-    volume24h: mockVolume24h,
-    loading: mockLoading,
-    refreshOrderBook: mockRefresh,
-  } = useOrderBook();
+  const pair = getTokenPair(selectedPairId);
+  const pairName = pair?.name ?? 'ALEO/USDC';
 
-  // Determine which data to use
-  const hasRealData = Object.keys(realOrderBook).length > 0;
-  const shouldUseMock = !useRealData || (!realLoading && !hasRealData);
+  // Asks: sorted highest→lowest (top of book at top, cheapest ask nearest mid)
+  const asksDisplay = [...asks].sort((a, b) => b.tickId - a.tickId).slice(0, 8);
+  // Bids: sorted highest→lowest (best bid at top of bids section)
+  const bidsDisplay = [...bids].sort((a, b) => b.tickId - a.tickId).slice(0, 8);
 
-  const orderBook = shouldUseMock ? mockOrderBook : realOrderBook;
-  const lastPrice = shouldUseMock ? mockLastPrice : realLastPrice;
-  const volume24h = shouldUseMock ? mockVolume24h : realVolume24h;
-  const loading = shouldUseMock ? mockLoading : realLoading;
-  const refreshOrderBook = shouldUseMock ? mockRefresh : realRefresh;
-
-  // Sort ticks by price
-  const sortedTicks = Object.values(orderBook).sort(
-    (a, b) => a.tickId - b.tickId
+  const maxOrders = Math.max(
+    1,
+    ...bidsDisplay.map((t) => t.orderCount),
+    ...asksDisplay.map((t) => t.orderCount)
   );
 
-  // Find mid-point tick for visual centering
-  const midIndex = Math.floor(sortedTicks.length / 2);
-  const buyTicks = sortedTicks.slice(0, midIndex);
-  const sellTicks = sortedTicks.slice(midIndex);
-
-  const maxVolume = Math.max(...sortedTicks.map((t) => t.volume));
-  const maxOrders = Math.max(...sortedTicks.map((t) => t.orderCount));
-
   return (
-    <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
+    <div className="rounded-lg border border-border bg-card flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-base sm:text-lg font-bold text-foreground">
-              Order Book
-            </h2>
-            <span className={`text-xs px-2 py-1 rounded ${shouldUseMock ? 'bg-amber-500/20 text-amber-600' : 'bg-green-500/20 text-green-600'}`}>
-              <Database className="w-3 h-3 inline mr-1" />
-              {shouldUseMock ? 'Demo Data' : 'Live'}
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            Tick-aggregated liquidity (ALEO/USDC)
+          <h2 className="text-sm font-bold text-foreground">{pairName} Order Book</h2>
+          <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+            <Lock className="w-3 h-3" /> Sizes encrypted · tick ranges public
           </p>
         </div>
         <Button
           onClick={refreshOrderBook}
           disabled={loading}
           size="sm"
-          variant="outline"
-          className="gap-2 bg-transparent"
+          variant="ghost"
+          className="h-8 w-8 p-0"
+          title="Refresh"
         >
           <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          {loading ? 'Updating...' : 'Refresh'}
         </Button>
       </div>
 
-      {/* Error Alert */}
-      {realError && !shouldUseMock && (
-        <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/30 flex gap-2">
-          <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="text-sm text-destructive font-semibold">Failed to fetch on-chain data</p>
-            <p className="text-xs text-destructive/80 mt-1">{realError}</p>
-          </div>
+      {error && (
+        <div className="mx-4 mt-3 p-2 rounded bg-destructive/10 border border-destructive/30 flex gap-2">
+          <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+          <p className="text-xs text-destructive">{error}</p>
         </div>
       )}
 
-      {/* Info for demo mode */}
-      {shouldUseMock && !realLoading && (
-        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex gap-2">
-          <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-          <p className="text-xs text-amber-900/80">
-            Showing demo data. Real order book will appear once orders are submitted on-chain.
-          </p>
-        </div>
-      )}
+      {/* Column headers */}
+      <div className="grid grid-cols-3 px-4 py-2 text-xs text-muted-foreground border-b border-border">
+        <span>Price (USD)</span>
+        <span className="text-center">Tick</span>
+        <span className="text-right">Orders</span>
+      </div>
 
-      {/* Market Info Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6 pb-4 border-b border-border">
-        <div>
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {/* Asks (sell side) — highest price at top, cheapest ask nearest mid */}
+        {loading && asks.length === 0 ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground text-center">Loading…</div>
+        ) : asksDisplay.length === 0 ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground/60 text-center italic">No sell orders</div>
+        ) : (
+          asksDisplay.map((tick) => (
+            <BookRow key={`ask_${tick.tickId}`} tick={tick} maxOrders={maxOrders} side="sell" onPriceClick={onPriceClick} />
+          ))
+        )}
+
+        {/* Mid-price separator */}
+        <div className="flex items-center gap-3 px-4 py-2 bg-muted/30 border-y border-border">
+          <span className="text-sm font-mono font-bold text-foreground">
+            {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
+          </span>
+          <span className="text-xs text-muted-foreground">mid price</span>
+        </div>
+
+        {/* Bids (buy side) — highest bid at top */}
+        {loading && bids.length === 0 ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground text-center">Loading…</div>
+        ) : bidsDisplay.length === 0 ? (
+          <div className="px-4 py-4 text-xs text-muted-foreground/60 text-center italic">No buy orders</div>
+        ) : (
+          bidsDisplay.map((tick) => (
+            <BookRow key={`bid_${tick.tickId}`} tick={tick} maxOrders={maxOrders} side="buy" onPriceClick={onPriceClick} />
+          ))
+        )}
+      </div>
+
+      {/* Stats footer */}
+      <div className="grid grid-cols-3 gap-0 border-t border-border text-center">
+        <div className="py-2.5 px-3 border-r border-border">
+          <p className="text-xs text-muted-foreground">Buys</p>
+          <p className="text-sm font-bold text-primary">{loading ? '…' : buyOrders}</p>
+        </div>
+        <div className="py-2.5 px-3 border-r border-border">
           <p className="text-xs text-muted-foreground">Last Price</p>
-          <p className="text-sm sm:text-base font-mono font-bold text-primary">
-            ${lastPrice.toFixed(2)}
+          <p className="text-sm font-bold text-foreground font-mono">
+            {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
           </p>
         </div>
-        <div>
-          <p className="text-xs text-muted-foreground">24h Volume</p>
-          <p className="text-sm sm:text-base font-mono font-bold text-accent">
-            {(volume24h / 1000).toFixed(0)}K ALEO
-          </p>
+        <div className="py-2.5 px-3">
+          <p className="text-xs text-muted-foreground">Sells</p>
+          <p className="text-sm font-bold text-destructive">{loading ? '…' : sellOrders}</p>
         </div>
-        <div className="col-span-2 sm:col-span-1">
-          <p className="text-xs text-muted-foreground">Tick Size</p>
-          <p className="text-sm sm:text-base font-mono font-bold text-foreground">
-            $0.01
-          </p>
-        </div>
-      </div>
-
-      {/* Order Book Table */}
-      <div className="space-y-6">
-        {/* Buy Side (Reversed) */}
-        <div>
-          <h3 className="text-xs font-semibold text-accent mb-3 uppercase tracking-wide">
-            Buy Orders
-          </h3>
-          <div className="space-y-2">
-            {buyTicks.reverse().map((tick) => (
-              <TickOrderRow
-                key={`buy_${tick.tickId}`}
-                tick={tick}
-                maxVolume={maxVolume}
-                maxOrders={maxOrders}
-                side="buy"
-              />
-            ))}
-          </div>
-        </div>
-
-        {/* Spread Indicator */}
-        <div className="py-3 px-4 rounded-lg bg-muted/30 border border-border text-center">
-          <p className="text-xs text-muted-foreground">
-            Bid-Ask Spread: &lt; 1 tick (encrypted by default)
-          </p>
-        </div>
-
-        {/* Sell Side */}
-        <div>
-          <h3 className="text-xs font-semibold text-destructive mb-3 uppercase tracking-wide">
-            Sell Orders
-          </h3>
-          <div className="space-y-2">
-            {sellTicks.map((tick) => (
-              <TickOrderRow
-                key={`sell_${tick.tickId}`}
-                tick={tick}
-                maxVolume={maxVolume}
-                maxOrders={maxOrders}
-                side="sell"
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Privacy Notice */}
-      <div className="mt-6 p-3 rounded-lg bg-primary/10 border border-primary/20">
-        <p className="text-xs text-foreground leading-relaxed">
-          <span className="font-semibold">Privacy Protected:</span> Individual
-          order sizes, exact prices, and trader identities remain encrypted. Only
-          tick ranges and aggregate metrics are visible.
-        </p>
       </div>
     </div>
   );
 }
 
-interface TickOrderRowProps {
-  tick: TickInfo;
-  maxVolume: number;
+interface BookRowProps {
+  tick: TickDisplayInfo;
   maxOrders: number;
   side: 'buy' | 'sell';
+  onPriceClick: (price: number) => void;
 }
 
-function TickOrderRow({
-  tick,
-  maxVolume,
-  maxOrders,
-  side,
-}: TickOrderRowProps) {
-  const volumePercent = (tick.volume / maxVolume) * 100;
-  const orderPercent = (tick.orderCount / maxOrders) * 100;
-
-  const minPrice = tick.tickRange.min;
-  const maxPrice = tick.tickRange.max;
+function BookRow({ tick, maxOrders, side, onPriceClick }: BookRowProps) {
+  const pct = (tick.orderCount / maxOrders) * 100;
 
   return (
-    <div className="group relative">
-      {/* Background Bar */}
+    <button
+      type="button"
+      onClick={() => onPriceClick(tick.tickRange.min)}
+      title="Click to use this price"
+      className="relative w-full grid grid-cols-3 px-4 py-1.5 text-xs text-left hover:bg-muted/40 transition-colors"
+    >
       <div
-        className={`absolute inset-0 rounded transition-all ${side === 'buy' ? 'bg-primary/10' : 'bg-destructive/10'}`}
-        style={{ width: `${volumePercent}%` }}
+        className={`absolute inset-y-0 right-0 ${side === 'buy' ? 'bg-primary/10' : 'bg-destructive/10'}`}
+        style={{ width: `${pct}%` }}
       />
-
-      {/* Content */}
-      <div className="relative p-3 flex items-center justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs text-muted-foreground">
-            Tick Range
-          </p>
-          <p className="text-sm font-mono text-foreground group-hover:text-primary transition-colors">
-            ${minPrice.toFixed(2)} - ${maxPrice.toFixed(2)}
-          </p>
-        </div>
-
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground">Orders</p>
-          <p className="text-sm font-mono font-bold text-accent">
-            {tick.orderCount}
-          </p>
-        </div>
-
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground">Est. Depth</p>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="w-12 h-2 rounded bg-muted/50">
-              <div
-                className={`h-full rounded ${side === 'buy' ? 'bg-primary' : 'bg-destructive'}`}
-                style={{ width: `${orderPercent}%` }}
-              />
-            </div>
-            <span className="text-xs font-mono text-muted-foreground">
-              {tick.volume.toLocaleString()}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
+      <span className={`relative font-mono font-semibold ${side === 'buy' ? 'text-primary' : 'text-destructive'}`}>
+        ${tick.tickRange.min.toFixed(2)}
+      </span>
+      <span className="relative text-center text-muted-foreground font-mono">
+        {tick.tickId}
+      </span>
+      <span className="relative text-right font-mono text-foreground">
+        {tick.orderCount}
+      </span>
+    </button>
   );
 }

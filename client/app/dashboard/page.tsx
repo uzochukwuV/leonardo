@@ -1,75 +1,68 @@
 'use client';
 
+import { useState } from 'react';
 import { Header } from '@/components/header';
 import { OrderBookDisplay } from '@/components/order-book-display';
 import { OrderPlacementForm } from '@/components/order-placement-form';
 import { RecentTrades } from '@/components/recent-trades';
+import { OrderBookStats } from '@/components/order-book-stats';
+import { useOrderBookData } from '@/hooks/use-order-book-data';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { config } from '@/lib/config';
 
 export default function Dashboard() {
+  const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
+  const [prefillPrice, setPrefillPrice] = useState<number | undefined>(undefined);
+
+  // Single fetch for the whole page — all panels share this data
+  const orderBookData = useOrderBookData(selectedPairId);
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />
 
-      <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 sm:py-10 max-w-7xl mx-auto w-full">
-        {/* Header Section */}
-        <div className="mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-3xl sm:text-4xl font-bold text-foreground">Trading Dashboard</h1>
-            <p className="text-muted-foreground">Order book with private tick-based matching</p>
+      <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto w-full">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Trading Dashboard</h1>
+            <p className="text-sm text-muted-foreground">Private tick-based order book on Aleo</p>
           </div>
           <Link href="/user-dashboard">
-            <Button variant="outline" size="sm">
-              My Orders
-            </Button>
+            <Button variant="outline" size="sm">My Orders</Button>
           </Link>
         </div>
 
-        {/* Main Trading Interface */}
-        <div className="grid lg:grid-cols-3 gap-6 mb-8">
-          {/* Left Column - Order Book */}
-          <div className="lg:col-span-2">
-            <OrderBookDisplay />
-          </div>
-
-          {/* Right Column - Order Form */}
-          <div>
-            <OrderPlacementForm />
-          </div>
+        {/* Live stats bar */}
+        <div className="mb-6">
+          <OrderBookStats selectedPairId={selectedPairId} data={orderBookData} />
         </div>
 
-        {/* Recent Trades Section */}
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold text-foreground">Recent Settlement Events</h2>
-          <RecentTrades />
+        {/* Main layout: order book left, form right */}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 mb-6">
+          <OrderBookDisplay
+            selectedPairId={selectedPairId}
+            onPriceClick={(price) => setPrefillPrice(price)}
+            data={orderBookData}
+          />
+          <OrderPlacementForm
+            selectedPairId={selectedPairId}
+            onPairChange={setSelectedPairId}
+            prefillPrice={prefillPrice}
+            onPrefillConsumed={() => setPrefillPrice(undefined)}
+          />
         </div>
+
+        {/* Recent trades below */}
+        <RecentTrades selectedPairId={selectedPairId} data={orderBookData} />
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border bg-card/50 mt-16">
-        <div className="px-4 sm:px-6 lg:px-8 py-8 max-w-7xl mx-auto w-full">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-muted-foreground">
-            <p>
-              Private tick-based order book on{' '}
-              <a
-                href="https://aleo.org"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                Aleo
-              </a>
-            </p>
-            <div className="flex gap-6">
-              <a href="/" className="hover:text-primary transition-colors">
-                Home
-              </a>
-              <a href="#" className="hover:text-primary transition-colors">
-                Docs
-              </a>
-            </div>
+      <footer className="border-t border-border bg-card/50 mt-8">
+        <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
+          <p>Private order book on <a href="https://aleo.org" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Aleo</a></p>
+          <div className="flex gap-6">
+            <a href="/" className="hover:text-primary">Home</a>
+            <a href="#" className="hover:text-primary">Docs</a>
           </div>
         </div>
       </footer>
