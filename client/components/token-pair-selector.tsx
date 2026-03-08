@@ -87,7 +87,7 @@ export function TokenPairSelector({ selectedPairId, onSelectPair }: TokenPairSel
                     <div className="text-left">
                       <p className="text-sm font-semibold text-foreground">{pair.name}</p>
                       <p className="text-xs text-muted-foreground">
-                        Tick: ${(pair.tickSize / 10000).toFixed(4)}
+                        Tick: {(pair.tickSize / 10000).toFixed(4)} {pair.quoteToken.symbol}
                       </p>
                     </div>
                   </div>

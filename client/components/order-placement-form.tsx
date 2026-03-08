@@ -193,7 +193,7 @@ export function OrderPlacementForm({
                   <span>{p.baseToken.icon}</span>
                   {p.name}
                   <span className="ml-auto text-xs text-muted-foreground">
-                    tick ${(p.tickSize / 10000).toFixed(2)}
+                    tick {(p.tickSize / 10000).toFixed(2)}
                   </span>
                 </button>
               ))}
@@ -230,15 +230,12 @@ export function OrderPlacementForm({
         <div>
           <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
             <span className="flex items-center gap-1">
-              Limit Price
+              Limit Price ({pair.quoteToken.symbol}/{pair.baseToken.symbol})
               <Lock className="w-3 h-3" />
               <span className="font-normal normal-case text-muted-foreground/50">(encrypted)</span>
             </span>
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-              $
-            </span>
             <input
               type="number"
               step="0.0001"
@@ -248,12 +245,12 @@ export function OrderPlacementForm({
               onChange={(e) => setLimitPrice(e.target.value)}
               disabled={!connected || submitting}
               placeholder={config.BASE_PRICE.toString()}
-              className="w-full pl-7 pr-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
+              className="w-full px-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
             />
           </div>
           {price > 0 && (
             <p className="text-xs text-muted-foreground/50 mt-1">
-              Public range: ${tickLowerUsd.toFixed(2)} – ${tickUpperUsd.toFixed(2)}
+              Public range: {tickLowerUsd.toFixed(2)} – {tickUpperUsd.toFixed(2)} {pair.quoteToken.symbol}
             </p>
           )}
         </div>
@@ -286,7 +283,7 @@ export function OrderPlacementForm({
             <span className="font-normal normal-case text-muted-foreground/50">(public)</span>
           </label>
           <p className="text-xs text-muted-foreground/50 mb-2">
-            Wider = more privacy. Others see your order in ±${(rw / 2).toFixed(2)} of your price.
+            Wider = more privacy. Others see your order in ±{(rw / 2).toFixed(2)} {pair.quoteToken.symbol} of your price.
           </p>
           <div className="flex items-center gap-3">
             <input
@@ -298,8 +295,8 @@ export function OrderPlacementForm({
               onChange={(e) => setRangeWidth(e.target.value)}
               className="flex-1 accent-primary"
             />
-            <span className="text-xs font-mono font-bold text-primary w-16 text-right">
-              ±${(rw / 2).toFixed(2)}
+            <span className="text-xs font-mono font-bold text-primary w-20 text-right">
+              ±{(rw / 2).toFixed(2)}
             </span>
           </div>
         </div>
@@ -334,7 +331,7 @@ export function OrderPlacementForm({
             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
               <span className="text-muted-foreground">Order value</span>
               <span className="font-mono font-bold text-foreground text-right">
-                ${valueUsd} {pair.quoteToken.symbol}
+                {valueUsd} {pair.quoteToken.symbol}
               </span>
               <span className="text-muted-foreground">Escrow required</span>
               <span
@@ -346,7 +343,7 @@ export function OrderPlacementForm({
               </span>
               <span className="text-muted-foreground">Public range</span>
               <span className="font-mono text-right text-muted-foreground">
-                ${tickLowerUsd.toFixed(2)}–${tickUpperUsd.toFixed(2)}
+                {tickLowerUsd.toFixed(2)}–{tickUpperUsd.toFixed(2)} {pair.quoteToken.symbol}
               </span>
             </div>
           </div>

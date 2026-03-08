@@ -53,14 +53,20 @@ export function useOrderBookData(tokenPairId: number = config.DEFAULT_TOKEN_PAIR
       setLoading(true);
       setError(null);
 
-      const [submitTxs, settleTxs] = await Promise.all([
-        fetchProgramTransitions(500, 'submit_order_with_escrow'),
-        fetchProgramTransitions(50, 'settle_match_public'),
+      // Fetch transitions for v5 contract functions
+      // submit_order = ARC-21 tokens, submit_order_credits = native ALEO
+      const [submitTxs, submitCreditsTxs, settleTxs] = await Promise.all([
+        fetchProgramTransitions(500, 'submit_order'),
+        fetchProgramTransitions(500, 'submit_order_credits'),
+        fetchProgramTransitions(50, 'settle_match'),
       ]);
+
+      // Combine both submission types
+      const allSubmitTxs = [...submitTxs, ...submitCreditsTxs];
 
       // Count actual orders (transitions) for this pair
       let buys = 0, sells = 0;
-      for (const tx of submitTxs) {
+      for (const tx of allSubmitTxs) {
         const inputs: string[] = tx.inputs ?? [];
         const pair = parseInt(String(inputs[0] ?? '').replace(/u64$/i, '').trim(), 10);
         if (pair !== tokenPairId) continue;
@@ -72,7 +78,7 @@ export function useOrderBookData(tokenPairId: number = config.DEFAULT_TOKEN_PAIR
 
       // Build tick-level depth
       const { bids: rawBids, asks: rawAsks } = transitionsToDepth(
-        submitTxs, tokenPairId, minTick, maxTick
+        allSubmitTxs, tokenPairId, minTick, maxTick
       );
 
       const toDisplay = (entries: typeof rawBids, isBid: boolean): TickDisplayInfo[] =>

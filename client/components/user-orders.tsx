@@ -6,11 +6,12 @@ import { X, TrendingUp, TrendingDown, RotateCw, Loader2 } from 'lucide-react';
 import { useUserOrders, type ParsedOrder } from '@/hooks/use-user-orders';
 import { useCancelOrder } from '@/hooks/use-cancel-order';
 import { useState } from 'react';
+import { config } from '@/lib/config';
 
 export function UserOrders() {
   const { address, connected } = useWallet();
   const { orders, loading, error: loadError, refresh } = useUserOrders();
-  const { cancelOrder, cancelling } = useCancelOrder();
+  const { cancelOrder, step, stepLabel, error: cancelHookError, reset } = useCancelOrder();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
 
@@ -24,25 +25,40 @@ export function UserOrders() {
 
   const handleCancel = async (order: ParsedOrder) => {
     setCancelError(null);
+    reset();
     setCancellingId(order.recordId);
-    // order_key: use nonce field as the key identifier — matches contract's derive_order_key input
-    const orderKey = order.rawRecord.data?.nonce ?? '0field';
-    const ok = await cancelOrder({ record: order.rawRecord, orderKey });
+
+    // Get token ID from order or default to native credits
+    const tokenId = order.tokenId ?? config.NATIVE_CREDITS_ID;
+    const isNative = tokenId === config.NATIVE_CREDITS_ID;
+
+    // Calculate refund amount (full escrow for now - order.escrowedAmount if available)
+    // In v5, we need to pass the correct refund amount
+    const refundAmount = order.escrowedAmount ?? order.quantityRaw;
+
+    const ok = await cancelOrder({
+      orderId: order.orderId,
+      tokenId,
+      refundAmount,
+      isNative,
+    });
+
     setCancellingId(null);
     if (ok) {
       refresh();
     } else {
-      setCancelError('Cancel failed — check your wallet and try again');
+      setCancelError(cancelHookError ?? 'Cancel failed — check your wallet and try again');
     }
   };
 
   const error = loadError ?? cancelError;
+  const isCancelling = step !== 'idle' && step !== 'done';
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-base sm:text-lg font-bold text-foreground">
-          My Active Orders (Private)
+          My Orders
         </h2>
         <Button
           onClick={refresh}
@@ -62,6 +78,12 @@ export function UserOrders() {
         </div>
       )}
 
+      {isCancelling && cancellingId && (
+        <div className="mb-4 p-3 rounded-lg bg-primary/10 border border-primary/30">
+          <p className="text-sm text-primary">{stepLabel[step]}</p>
+        </div>
+      )}
+
       {loading && orders.length === 0 ? (
         <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin" />
@@ -71,30 +93,21 @@ export function UserOrders() {
         <div className="text-center py-12">
           <p className="text-muted-foreground mb-2">No orders found</p>
           <p className="text-sm text-muted-foreground">
-            Place your first order to start trading privately
+            Place your first order to start trading
           </p>
         </div>
       ) : (
         <>
           {/* Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6 pb-4 border-b border-border">
+          <div className="grid grid-cols-2 gap-4 mb-6 pb-4 border-b border-border">
             <div>
               <p className="text-xs text-muted-foreground">Orders</p>
               <p className="text-base sm:text-lg font-bold text-foreground">{orders.length}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Escrowed</p>
+              <p className="text-xs text-muted-foreground">Total Quantity</p>
               <p className="text-base sm:text-lg font-bold text-primary">
-                {orders.reduce((s, o) => s + Number(o.escrowedAmount) / 1e6, 0).toFixed(2)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Avg Fill</p>
-              <p className="text-base sm:text-lg font-bold text-accent">
-                {(
-                  orders.reduce((s, o) => s + o.fillPercent, 0) / orders.length
-                ).toFixed(0)}
-                %
+                {orders.reduce((s, o) => s + Number(o.quantityRaw) / 1e6, 0).toFixed(2)}
               </p>
             </div>
           </div>
@@ -105,7 +118,7 @@ export function UserOrders() {
                 key={order.recordId}
                 order={order}
                 onCancel={() => handleCancel(order)}
-                cancelling={cancellingId === order.recordId && cancelling}
+                cancelling={cancellingId === order.recordId && isCancelling}
               />
             ))}
           </div>
@@ -114,9 +127,9 @@ export function UserOrders() {
 
       <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/20">
         <p className="text-xs text-foreground leading-relaxed">
-          <span className="font-semibold">Privacy Guarantee:</span> Order details
-          including exact prices, quantities, and settlement information are
-          ZK-proven on Aleo. Only you can view complete order details via your wallet.
+          <span className="font-semibold">v5 Architecture:</span> Orders are stored in public
+          mappings for permissionless settlement. Your OrderReceipt proves ownership and allows
+          cancellation. Exact prices remain private until settlement.
         </p>
       </div>
     </div>
@@ -139,6 +152,12 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
     return `${Math.floor(mins / 60)}h ago`;
   };
 
+  // Status display
+  const statusText = order.status ?? 'active';
+  const statusColor = statusText === 'filled' ? 'text-accent' :
+                      statusText === 'cancelled' ? 'text-muted-foreground' :
+                      'text-foreground';
+
   return (
     <div className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors">
       <div className="flex items-start justify-between gap-4 mb-3">
@@ -158,52 +177,57 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
             >
               {isBuy ? 'BUY' : 'SELL'}
             </span>
-            {order.fillPercent > 0 && (
-              <span className="text-xs font-semibold px-2 py-1 rounded bg-accent/20 text-accent">
-                {order.fillPercent.toFixed(0)}% filled
-              </span>
-            )}
+            <span className={`text-xs ${statusColor}`}>
+              {statusText}
+            </span>
           </div>
 
           <p className="text-xs text-muted-foreground mb-1">
-            Tick Range: ${order.tickLowerUsd.toFixed(2)} – ${order.tickUpperUsd.toFixed(2)}
+            Limit: ${order.limitPriceUsd.toFixed(4)}
           </p>
           <p className="text-xs text-muted-foreground">
-            Limit: ${order.limitPriceUsd.toFixed(4)} • {formatTime(order.timestamp)}
+            Qty: {(Number(order.quantityRaw) / 1e6).toFixed(2)} • {formatTime(order.timestamp)}
+          </p>
+          <p className="text-xs text-muted-foreground font-mono truncate">
+            ID: {order.orderId.slice(0, 16)}...
           </p>
         </div>
 
-        <Button
-          onClick={onCancel}
-          disabled={cancelling}
-          size="sm"
-          variant="ghost"
-          className="text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
-        >
-          {cancelling ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <X className="w-4 h-4" />
-          )}
-        </Button>
+        {statusText === 'active' && (
+          <Button
+            onClick={onCancel}
+            disabled={cancelling}
+            size="sm"
+            variant="ghost"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
+          >
+            {cancelling ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <X className="w-4 h-4" />
+            )}
+          </Button>
+        )}
       </div>
 
-      {/* Fill Progress */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <p className="text-xs text-muted-foreground">Filled</p>
-          <p className="text-xs font-mono text-foreground">
-            {(Number(order.filledRaw) / 1e6).toFixed(2)} /{' '}
-            {(Number(order.quantityRaw) / 1e6).toFixed(2)}
-          </p>
+      {/* Fill Progress (if available) */}
+      {order.filled !== undefined && order.filled > 0n && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs text-muted-foreground">Filled</p>
+            <p className="text-xs font-mono text-foreground">
+              {(Number(order.filled) / 1e6).toFixed(2)} /{' '}
+              {(Number(order.quantityRaw) / 1e6).toFixed(2)}
+            </p>
+          </div>
+          <div className="w-full h-2 rounded-full bg-muted/50 overflow-hidden">
+            <div
+              className={`h-full transition-all ${isBuy ? 'bg-primary' : 'bg-destructive'}`}
+              style={{ width: `${Number((order.filled * 100n) / order.quantityRaw)}%` }}
+            />
+          </div>
         </div>
-        <div className="w-full h-2 rounded-full bg-muted/50 overflow-hidden">
-          <div
-            className={`h-full transition-all ${isBuy ? 'bg-primary' : 'bg-destructive'}`}
-            style={{ width: `${order.fillPercent}%` }}
-          />
-        </div>
-      </div>
+      )}
     </div>
   );
 }

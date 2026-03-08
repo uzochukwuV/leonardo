@@ -4,7 +4,13 @@
 
 export const config = {
   // Deployed contract program ID
-  CONTRACT_PROGRAM_ID: 'private_orderbook_v4.aleo',
+  CONTRACT_PROGRAM_ID: 'private_orderbook_0000v8testnet.aleo',
+
+  // Native ALEO credits token ID (0field = use credits.aleo)
+  NATIVE_CREDITS_ID: '0field',
+
+  // Circle test USDC token ID (1field = use test_usdc_token.aleo)
+  CIRCLE_USDC_ID: '1field',
 
   // The program's on-chain Aleo address (derived from program ID).
   // Used as the `spender` argument in token_registry approve_public calls.
@@ -46,7 +52,7 @@ export const config = {
   ORDER_BOOK_REFRESH_INTERVAL: 15_000, // Refresh every 15 seconds
 
   // UI defaults
-  DEFAULT_TOKEN_PAIR: 2, // ALEO/USDC (pair 2 on testnet; pair 1 uses different admin's tokens)
+  DEFAULT_TOKEN_PAIR: 2, // ALEO/TKNB (pair 2 on testnet)
   BASE_PRICE: 15.0, // $15.00
   MAX_PRICE: 1000.0, // $1000.00
 } as const;

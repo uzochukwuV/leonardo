@@ -4,9 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
-import { Copy, ExternalLink, Wallet, ChevronDown } from 'lucide-react';
+import { Copy, ExternalLink, Wallet, ChevronDown, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { useOrderBookData } from '@/hooks/use-order-book-data';
+import { useTokenBalances } from '@/hooks/use-token-balances';
 import { config } from '@/lib/config';
 
 export function Header() {
@@ -18,6 +19,9 @@ export function Header() {
 
   // Live price from chain
   const { lastPrice } = useOrderBookData(config.DEFAULT_TOKEN_PAIR);
+
+  // Token balances
+  const { balances, loading: balancesLoading, refresh: refreshBalances } = useTokenBalances();
 
   const shortAddress = address
     ? `${address.slice(0, 8)}...${address.slice(-8)}`
@@ -138,6 +142,58 @@ export function Header() {
                       >
                         <Copy className={`w-4 h-4 ${copied ? 'text-green-500' : 'text-primary'}`} />
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Token Balances */}
+                  <div className="px-4 py-3 border-b border-border">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase">
+                        Balances
+                      </p>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); refreshBalances(); }}
+                        className="p-1 hover:bg-primary/10 rounded transition-colors"
+                        title="Refresh balances"
+                      >
+                        <RefreshCw className={`w-3 h-3 text-muted-foreground ${balancesLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {Object.values(balances).map((bal) => (
+                        <div
+                          key={bal.token.symbol}
+                          className="flex items-center justify-between p-2 bg-background rounded-lg"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">{bal.token.icon}</span>
+                            <div>
+                              <p className="text-xs font-medium text-foreground">
+                                {bal.token.symbol}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {bal.token.name}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            {bal.loading ? (
+                              <p className="text-xs text-muted-foreground">Loading...</p>
+                            ) : bal.error ? (
+                              <p className="text-xs text-destructive">Error</p>
+                            ) : (
+                              <p className="text-sm font-mono text-foreground">
+                                {bal.formatted}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {Object.keys(balances).length === 0 && !balancesLoading && (
+                        <p className="text-xs text-muted-foreground text-center py-2">
+                          No tokens found
+                        </p>
+                      )}
                     </div>
                   </div>
 

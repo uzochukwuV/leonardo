@@ -2,18 +2,17 @@
 
 /**
  * useCancelOrder
- * Cancels an open TickOrder and refunds the escrowed tokens.
+ * Two-step cancellation flow for v5 contract:
+ *   1. cancel_order(order_id) - Marks order as cancelled
+ *   2. withdraw_cancelled_credits(order_id, amount) - For native ALEO
+ *      OR withdraw_cancelled_usdc(order_id, amount) - For Circle USDC
+ *      OR withdraw_cancelled(order_id, token_id, amount) - For ARC-21 tokens
  *
- * Contract signature (main.leo):
- *   cancel_order_public_escrow(
- *     private order:     TickOrder,
- *     public  order_key: field
- *   )
- *
- * The TickOrder record is passed as its plaintext literal (from requestRecords).
- * The order_key is a field derived on-chain — callers pass it if known,
- * or pass the record's nonce field as a best-effort placeholder (the contract
- * derives the key itself via BHP256).
+ * Contract signatures (main.leo):
+ *   cancel_order(public order_id: field)
+ *   withdraw_cancelled_credits(public order_id: field, public amount: u64)
+ *   withdraw_cancelled_usdc(public order_id: field, public amount: u128)
+ *   withdraw_cancelled(public order_id: field, public token_id: field, public amount: u128)
  */
 
 import { useState, useCallback } from 'react';
@@ -21,20 +20,33 @@ import { useContract } from './use-contract';
 import { config } from '@/lib/config';
 
 export interface CancelOrderParams {
-  /** Plaintext record literal or the raw record object from requestRecords */
-  record: any;
-  /** The on-chain order_key field — pass the record's nonce if unknown */
-  orderKey: string;
+  /** The on-chain order_id field */
+  orderId: string;
+  /** Token ID for the escrowed token */
+  tokenId: string;
+  /** Amount to withdraw (refund) */
+  refundAmount: bigint;
+  /** Whether this is native ALEO credits (tokenId === '0field') */
+  isNative?: boolean;
+  /** Whether this is Circle USDC (tokenId === '1field') */
+  isCircleUsdc?: boolean;
 }
+
+export type CancelStep = 'idle' | 'cancelling' | 'withdrawing' | 'done';
 
 export function useCancelOrder() {
   const { connected, execTx, pollTx } = useContract();
-  const [cancelling, setCancelling] = useState(false);
+  const [step, setStep] = useState<CancelStep>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  const reset = useCallback(() => {
+    setStep('idle');
+    setError(null);
+  }, []);
 
   const cancelOrder = useCallback(
     async (params: CancelOrderParams): Promise<boolean> => {
-      const { record, orderKey } = params;
+      const { orderId, tokenId, refundAmount, isNative, isCircleUsdc } = params;
 
       setError(null);
 
@@ -43,70 +55,91 @@ export function useCancelOrder() {
         return false;
       }
 
-      setCancelling(true);
       try {
-        // Build the record input string.
-        // Prefer plaintext literal; fall back to reconstructing from nonce fields;
-        // last resort: pass the raw object (wallet may handle it).
-        let recordInput: string;
-        if (typeof record === 'string') {
-          recordInput = record;
-        } else if (record.plaintext) {
-          recordInput = record.plaintext;
-        } else {
-          const nonce = record.nonce || record._nonce || record.data?._nonce;
-          if (nonce) {
-            // Reconstruct a minimal plaintext literal that the wallet can sign
-            const d = record.data ?? {};
-            recordInput = [
-              `{ owner: ${record.owner}.private`,
-              `token_pair: ${d.token_pair ?? '1u64'}.private`,
-              `tick_lower: ${d.tick_lower ?? '0u64'}.private`,
-              `tick_upper: ${d.tick_upper ?? '0u64'}.private`,
-              `is_buy: ${d.is_buy ?? 'true'}.private`,
-              `quantity: ${d.quantity ?? '0u128'}.private`,
-              `limit_price: ${d.limit_price ?? '0u64'}.private`,
-              `token_id: ${d.token_id ?? '0field'}.private`,
-              `escrowed_amount: ${d.escrowed_amount ?? '0u128'}.private`,
-              `filled: ${d.filled ?? '0u128'}.private`,
-              `nonce: ${d.nonce ?? '0field'}.private`,
-              `timestamp: ${d.timestamp ?? '0u32'}.private`,
-              `expires_at: ${d.expires_at ?? '0u32'}.private`,
-              `_nonce: ${nonce}.public }`,
-            ].join(', ');
-          } else if (record.ciphertext) {
-            recordInput = record.ciphertext;
-          } else {
-            recordInput = JSON.stringify(record);
-          }
-        }
-
-        const txId = await execTx({
+        // Step 1: Cancel the order (marks as cancelled in mapping)
+        setStep('cancelling');
+        const cancelTxId = await execTx({
           program: config.CONTRACT_PROGRAM_ID,
-          function: 'cancel_order_public_escrow',
-          inputs: [
-            recordInput,    // private order: TickOrder
-            orderKey,       // public  order_key: field
-          ],
+          function: 'cancel_order',
+          inputs: [orderId],
           fee: config.DEFAULT_FEE,
           privateFee: false,
         });
 
-        const result = await pollTx(txId);
-        if (result.status === 'rejected') {
+        const cancelResult = await pollTx(cancelTxId);
+        if (cancelResult.status === 'rejected') {
           throw new Error('Cancel transaction rejected on-chain');
         }
 
+        // Step 2: Withdraw the refund
+        setStep('withdrawing');
+
+        // Determine token type for withdrawal
+        const useNative = isNative ?? tokenId === config.NATIVE_CREDITS_ID;
+        const useCircleUsdc = isCircleUsdc ?? tokenId === config.CIRCLE_USDC_ID;
+
+        let withdrawTxId: string;
+        if (useNative) {
+          // Native ALEO credits withdrawal
+          withdrawTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'withdraw_cancelled_credits',
+            inputs: [
+              orderId,
+              `${refundAmount}u64`, // Native credits use u64
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+        } else if (useCircleUsdc) {
+          // Circle USDC withdrawal
+          withdrawTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'withdraw_cancelled_usdc',
+            inputs: [
+              orderId,
+              `${refundAmount}u128`, // Circle USDC uses u128
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+        } else {
+          // ARC-21 token withdrawal
+          withdrawTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'withdraw_cancelled',
+            inputs: [
+              orderId,
+              tokenId,
+              `${refundAmount}u128`,
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+        }
+
+        const withdrawResult = await pollTx(withdrawTxId);
+        if (withdrawResult.status === 'rejected') {
+          throw new Error('Withdrawal transaction rejected on-chain');
+        }
+
+        setStep('done');
         return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Cancel failed');
+        setStep('idle');
         return false;
-      } finally {
-        setCancelling(false);
       }
     },
     [connected, execTx, pollTx]
   );
 
-  return { cancelOrder, cancelling, error };
+  const stepLabel: Record<CancelStep, string> = {
+    idle: '',
+    cancelling: 'Cancelling order...',
+    withdrawing: 'Withdrawing funds...',
+    done: 'Order cancelled!',
+  };
+
+  return { cancelOrder, step, stepLabel, error, reset };
 }

@@ -2,22 +2,22 @@
 
 /**
  * useSubmitOrder
- * Two-step order placement flow:
- *   1. token_registry.aleo/approve_public  — grants escrow pull to program
- *   2. private_orderbook_v4.aleo/submit_order_with_escrow — submits the order
+ * Order submission for v5 contract with tri-token support:
  *
- * Contract signature (main.leo):
- *   submit_order_with_escrow(
- *     public  token_pair:  u64,
- *     public  is_buy:      bool,
- *     public  tick_lower:  u64,
- *     public  tick_upper:  u64,
- *     public  timestamp:   u32,
- *     public  expires_at:  u32,
- *     private limit_price: u64,
- *     private quantity:    u128,
- *     public  token_id:    field
- *   )
+ * For native ALEO credits (tokenId = 0field):
+ *   - submit_order_credits (no approval needed)
+ *
+ * For Circle USDC (tokenId = 1field):
+ *   - submit_order_usdc (uses test_usdc_token.aleo - requires approval)
+ *
+ * For ARC-21 tokens:
+ *   1. token_registry.aleo/approve_public — grants escrow pull to program
+ *   2. submit_order — submits the order with token transfer
+ *
+ * Contract signatures (main.leo):
+ *   submit_order(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity, token_id)
+ *   submit_order_credits(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity)
+ *   submit_order_usdc(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity)
  */
 
 import { useState, useCallback } from 'react';
@@ -96,48 +96,112 @@ export function useSubmitOrder() {
         const escrowAmt = calculateEscrowAmount(isBuy, quantityRaw, BigInt(limitPriceBps));
         const timestamp = Math.floor(Date.now() / 1000);
 
-        // ── Step 1: approve_public ────────────────────────────────────────
-        // Approve the program's on-chain address (not the program ID string)
-        // to pull escrowAmt of the escrow token from the user's public balance.
-        setStep('approving');
-        const approveTxId = await execTx({
-          program: 'token_registry.aleo',
-          function: 'approve_public',
-          inputs: [
-            escrowToken.tokenId,        // token_id: field
-            config.PROGRAM_ADDRESS,     // spender: the program's aleo address
-            `${escrowAmt}u128`,         // amount: u128
-          ],
-          fee: config.DEFAULT_FEE,
-          privateFee: false,
-        });
+        // Check token type for routing
+        const isNative = escrowToken.isNative || escrowToken.tokenId === config.NATIVE_CREDITS_ID;
+        const isCircleUsdc = escrowToken.isCircleUsdc || escrowToken.tokenId === config.CIRCLE_USDC_ID;
 
-        const approveResult = await pollTx(approveTxId);
-        if (approveResult.status === 'rejected') {
-          throw new Error('Approve transaction rejected on-chain');
+        let orderTxId: string;
+
+        if (isNative) {
+          // ── Native ALEO credits: direct submission (no approval) ────────
+          setStep('submitting');
+          orderTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'submit_order_credits',
+            inputs: [
+              `${pairId}u64`,             // public  token_pair
+              `${isBuy}`,                 // public  is_buy
+              `${tickLowerId}u64`,        // public  tick_lower
+              `${tickUpperId}u64`,        // public  tick_upper
+              `${timestamp}u32`,          // public  timestamp
+              `${expiresAt}u32`,          // public  expires_at
+              `${limitPriceBps}u64`,      // public  limit_price
+              `${quantityRaw}u128`,       // public  quantity
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+        } else if (isCircleUsdc) {
+          // ── Circle USDC: approve + submit_order_usdc ────────────────────
+          // Step 1: approve_public on test_usdc_token.aleo
+          setStep('approving');
+          const approveTxId = await execTx({
+            program: 'test_usdc_token.aleo',
+            function: 'approve_public',
+            inputs: [
+              config.PROGRAM_ADDRESS,     // spender: the program's aleo address
+              `${escrowAmt}u128`,         // amount: u128
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+
+          const approveResult = await pollTx(approveTxId);
+          if (approveResult.status === 'rejected') {
+            throw new Error('Circle USDC approve rejected on-chain');
+          }
+
+          // Step 2: submit_order_usdc
+          setStep('submitting');
+          orderTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'submit_order_usdc',
+            inputs: [
+              `${pairId}u64`,             // public  token_pair
+              `${isBuy}`,                 // public  is_buy
+              `${tickLowerId}u64`,        // public  tick_lower
+              `${tickUpperId}u64`,        // public  tick_upper
+              `${timestamp}u32`,          // public  timestamp
+              `${expiresAt}u32`,          // public  expires_at
+              `${limitPriceBps}u64`,      // public  limit_price
+              `${quantityRaw}u128`,       // public  quantity
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+        } else {
+          // ── ARC-21 tokens: approve + submit ──────────────────────────────
+          // Step 1: approve_public
+          setStep('approving');
+          const approveTxId = await execTx({
+            program: 'token_registry.aleo',
+            function: 'approve_public',
+            inputs: [
+              escrowToken.tokenId,        // token_id: field
+              config.PROGRAM_ADDRESS,     // spender: the program's aleo address
+              `${escrowAmt}u128`,         // amount: u128
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
+
+          const approveResult = await pollTx(approveTxId);
+          if (approveResult.status === 'rejected') {
+            throw new Error('Approve transaction rejected on-chain');
+          }
+
+          // Step 2: submit_order
+          setStep('submitting');
+          orderTxId = await execTx({
+            program: config.CONTRACT_PROGRAM_ID,
+            function: 'submit_order',
+            inputs: [
+              `${pairId}u64`,             // public  token_pair
+              `${isBuy}`,                 // public  is_buy
+              `${tickLowerId}u64`,        // public  tick_lower
+              `${tickUpperId}u64`,        // public  tick_upper
+              `${timestamp}u32`,          // public  timestamp
+              `${expiresAt}u32`,          // public  expires_at
+              `${limitPriceBps}u64`,      // public  limit_price
+              `${quantityRaw}u128`,       // public  quantity
+              escrowToken.tokenId,        // public  token_id
+            ],
+            fee: config.DEFAULT_FEE,
+            privateFee: false,
+          });
         }
 
-        // ── Step 2: submit_order_with_escrow ──────────────────────────────
-        setStep('submitting');
-        const orderTxId = await execTx({
-          program: config.CONTRACT_PROGRAM_ID,
-          function: 'submit_order_with_escrow',
-          inputs: [
-            `${pairId}u64`,             // public  token_pair
-            `${isBuy}`,                  // public  is_buy
-            `${tickLowerId}u64`,         // public  tick_lower
-            `${tickUpperId}u64`,         // public  tick_upper
-            `${timestamp}u32`,           // public  timestamp
-            `${expiresAt}u32`,           // public  expires_at
-            `${limitPriceBps}u64`,       // private limit_price
-            `${quantityRaw}u128`,        // private quantity
-            escrowToken.tokenId,         // public  token_id
-          ],
-          fee: config.DEFAULT_FEE,
-          privateFee: false,
-        });
-
-        // ── Step 3: poll ──────────────────────────────────────────────────
+        // ── Poll for confirmation ──────────────────────────────────────────
         setStep('polling');
         const orderResult = await pollTx(orderTxId);
         if (orderResult.status === 'rejected') {

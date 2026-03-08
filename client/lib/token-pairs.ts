@@ -10,6 +10,9 @@ export interface TokenInfo {
   tokenId: string; // On-chain token_id (field literal), e.g. "1field"
   icon?: string;
   color?: string;
+  isNative?: boolean; // true = native ALEO credits (uses credits.aleo)
+  isCircleUsdc?: boolean; // true = Circle's test USDC (uses test_usdc_token.aleo)
+  programId?: string; // Direct program import (e.g., "test_usdc_token.aleo")
 }
 
 export interface TokenPair {
@@ -30,19 +33,22 @@ export const TOKENS: Record<string, TokenInfo> = {
     symbol: 'ALEO',
     name: 'Aleo',
     decimals: 6,
-    // Testnet token registered via demo.sh (BASE_TOKEN_ID=7001field)
-    tokenId: '7001field',
+    // Native ALEO credits: 0field = uses credits.aleo (not token_registry)
+    tokenId: '0field',
     icon: '🅰️',
     color: '#00D4AA',
-  },
+    isNative: true, // Flag for native credits
+  } as TokenInfo & { isNative?: boolean },
   USDC: {
     symbol: 'USDC',
-    name: 'USD Coin',
+    name: 'USD Coin (Circle)',
     decimals: 6,
-    // Testnet token registered via demo.sh (QUOTE_TOKEN_ID=7002field)
-    tokenId: '7002field',
+    // Circle's test USDC: uses test_usdc_token.aleo (1field marker)
+    tokenId: '1field',
     icon: '💵',
     color: '#2775CA',
+    isCircleUsdc: true,
+    programId: 'test_usdc_token.aleo',
   },
   USDT: {
     symbol: 'USDT',
@@ -68,6 +74,22 @@ export const TOKENS: Record<string, TokenInfo> = {
     icon: '♦️',
     color: '#627EEA',
   },
+  TOKEN_A: {
+    symbol: 'TKNA',
+    name: 'Token A',
+    decimals: 6,
+    tokenId: '7001field',
+    icon: '🅰️',
+    color: '#FF6B6B',
+  },
+  TOKEN_B: {
+    symbol: 'TKNB',
+    name: 'Token B',
+    decimals: 6,
+    tokenId: '7002field',
+    icon: '🅱️',
+    color: '#4ECDC4',
+  },
 };
 
 // Token pair configurations
@@ -85,9 +107,9 @@ export const TOKEN_PAIRS: Record<number, TokenPair> = {
   },
   2: {
     id: 2,
-    name: 'ALEO/USDC',
+    name: 'ALEO/TKNB',
     baseToken: TOKENS.ALEO,
-    quoteToken: TOKENS.USDC,
+    quoteToken: TOKENS.TOKEN_B,
     tickSize: 100, // $0.01
     minPrice: 10000, // $1.00
     maxPrice: 10000000, // $1000.00
@@ -96,25 +118,25 @@ export const TOKEN_PAIRS: Record<number, TokenPair> = {
   },
   3: {
     id: 3,
-    name: 'WBTC/USDC',
-    baseToken: TOKENS.WBTC,
-    quoteToken: TOKENS.USDC,
-    tickSize: 10000, // $1.00
-    minPrice: 100000, // $10.00
-    maxPrice: 1000000000, // $100,000.00
-    maxTickRange: 100, // 100 ticks = $100 range
-    active: false, // Not yet active
+    name: 'ALEO/TKNA',
+    baseToken: TOKENS.ALEO,
+    quoteToken: TOKENS.TOKEN_A,
+    tickSize: 100, // $0.01
+    minPrice: 10000, // $1.00
+    maxPrice: 10000000, // $1000.00
+    maxTickRange: 50,
+    active: true,
   },
   4: {
     id: 4,
-    name: 'WETH/USDC',
-    baseToken: TOKENS.WETH,
-    quoteToken: TOKENS.USDC,
-    tickSize: 1000, // $0.10
+    name: 'TKNA/TKNB',
+    baseToken: TOKENS.TOKEN_A,
+    quoteToken: TOKENS.TOKEN_B,
+    tickSize: 100, // $0.01
     minPrice: 10000, // $1.00
-    maxPrice: 100000000, // $10,000.00
-    maxTickRange: 100, // 100 ticks = $10 range
-    active: false, // Not yet active
+    maxPrice: 10000000, // $1000.00
+    maxTickRange: 50,
+    active: true,
   },
 };
 
