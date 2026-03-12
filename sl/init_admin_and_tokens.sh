@@ -11,32 +11,32 @@ echo "║   Initialize Admin & Register Token Pairs                ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# # Initialize admin
-# echo "▸ Initializing admin..."
-# leo execute initialize_admin \
-#     --network "$NETWORK" \
-#     --broadcast \
-#     --endpoint "$ENDPOINT" \
-#     --private-key "$PRIVATE_KEY"
-# echo "✓ Admin initialized"
-# echo ""
+# Initialize admin
+echo "▸ Initializing admin..."
+leo execute initialize_admin \
+    --network "$NETWORK" \
+    --broadcast \
+    --endpoint "$ENDPOINT" \
+    --private-key "$PRIVATE_KEY"
+echo "✓ Admin initialized"
+echo ""
 
-# # Register token pair 2: ALEO (0field) / TKNB (7002field)
-# echo "▸ Registering token pair 2: ALEO/TKNB..."
-# leo execute register_token_pair \
-#     2u64 \
-#     0field \
-#     7002field \
-#     100u64 \
-#     10u64 \
-#     5u64 \
-#     "$ADMIN_ADDRESS" \
-#     --network "$NETWORK" \
-#     --broadcast \
-#     --endpoint "$ENDPOINT" \
-#     --private-key "$PRIVATE_KEY"
-# echo "✓ Token pair 2 registered"
-# echo ""
+# Register token pair 2: ALEO (0field) / TKNB (7002field)
+echo "▸ Registering token pair 2: ALEO/TKNB..."
+leo execute register_token_pair \
+    2u64 \
+    0field \
+    7002field \
+    100u64 \
+    10u64 \
+    5u64 \
+    "$ADMIN_ADDRESS" \
+    --network "$NETWORK" \
+    --broadcast \
+    --endpoint "$ENDPOINT" \
+    --private-key "$PRIVATE_KEY"
+echo "✓ Token pair 2 registered"
+echo ""
 
 # Register token pair 3: ALEO (0field) / TKNA (7001field)
 echo "▸ Registering token pair 3: ALEO/TKNA..."

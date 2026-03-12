@@ -55,6 +55,7 @@ export default function UserDashboard() {
           </div>
         </div>
       </main>
+      
 
       {/* Footer */}
       <footer className="border-t border-border bg-card/50 mt-16">

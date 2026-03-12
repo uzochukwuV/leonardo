@@ -1,7 +1,7 @@
 'use client';
 
 import { type TickDisplayInfo, type OrderBookData } from '@/hooks/use-order-book-data';
-import { RotateCw, AlertCircle, Lock } from 'lucide-react';
+import { RotateCw, AlertCircle, Lock, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getTokenPair } from '@/lib/token-pairs';
 
@@ -12,7 +12,20 @@ interface OrderBookDisplayProps {
 }
 
 export function OrderBookDisplay({ selectedPairId, onPriceClick, data }: OrderBookDisplayProps) {
-  const { bids, asks, buyOrders, sellOrders, lastPrice, loading, error, refreshOrderBook } = data;
+  const {
+    bids,
+    asks,
+    buyOrders,
+    sellOrders,
+    lastPrice,
+    spread,
+    bestBid,
+    bestAsk,
+    loading,
+    error,
+    keeperStatus,
+    refreshOrderBook,
+  } = data;
 
   const pair = getTokenPair(selectedPairId);
   const pairName = pair?.name ?? 'ALEO/USDC';
@@ -35,7 +48,17 @@ export function OrderBookDisplay({ selectedPairId, onPriceClick, data }: OrderBo
         <div>
           <h2 className="text-sm font-bold text-foreground">{pairName} Order Book</h2>
           <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
-            <Lock className="w-3 h-3" /> Sizes encrypted · tick ranges public
+            <Lock className="w-3 h-3" /> Sizes encrypted · prices private
+            {keeperStatus === 'connected' && (
+              <span className="ml-2 flex items-center gap-1 text-primary">
+                <Wifi className="w-3 h-3" /> Keeper
+              </span>
+            )}
+            {keeperStatus === 'disconnected' && (
+              <span className="ml-2 flex items-center gap-1 text-destructive">
+                <WifiOff className="w-3 h-3" /> Keeper offline
+              </span>
+            )}
           </p>
         </div>
         <Button
@@ -77,11 +100,18 @@ export function OrderBookDisplay({ selectedPairId, onPriceClick, data }: OrderBo
         )}
 
         {/* Mid-price separator */}
-        <div className="flex items-center gap-3 px-4 py-2 bg-muted/30 border-y border-border">
-          <span className="text-sm font-mono font-bold text-foreground">
-            {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
-          </span>
-          <span className="text-xs text-muted-foreground">mid price</span>
+        <div className="flex items-center justify-between px-4 py-2 bg-muted/30 border-y border-border">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-mono font-bold text-foreground">
+              {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
+            </span>
+            <span className="text-xs text-muted-foreground">mid price</span>
+          </div>
+          {spread !== null && spread > 0 && (
+            <span className="text-xs text-muted-foreground">
+              spread: ${spread.toFixed(4)}
+            </span>
+          )}
         </div>
 
         {/* Bids (buy side) — highest bid at top */}
@@ -97,18 +127,24 @@ export function OrderBookDisplay({ selectedPairId, onPriceClick, data }: OrderBo
       </div>
 
       {/* Stats footer */}
-      <div className="grid grid-cols-3 gap-0 border-t border-border text-center">
-        <div className="py-2.5 px-3 border-r border-border">
+      <div className="grid grid-cols-4 gap-0 border-t border-border text-center">
+        <div className="py-2.5 px-2 border-r border-border">
           <p className="text-xs text-muted-foreground">Buys</p>
           <p className="text-sm font-bold text-primary">{loading ? '…' : buyOrders}</p>
         </div>
-        <div className="py-2.5 px-3 border-r border-border">
-          <p className="text-xs text-muted-foreground">Last Price</p>
-          <p className="text-sm font-bold text-foreground font-mono">
-            {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
+        <div className="py-2.5 px-2 border-r border-border">
+          <p className="text-xs text-muted-foreground">Best Bid</p>
+          <p className="text-sm font-bold text-primary font-mono">
+            {bestBid ? `$${bestBid.toFixed(2)}` : '—'}
           </p>
         </div>
-        <div className="py-2.5 px-3">
+        <div className="py-2.5 px-2 border-r border-border">
+          <p className="text-xs text-muted-foreground">Best Ask</p>
+          <p className="text-sm font-bold text-destructive font-mono">
+            {bestAsk ? `$${bestAsk.toFixed(2)}` : '—'}
+          </p>
+        </div>
+        <div className="py-2.5 px-2">
           <p className="text-xs text-muted-foreground">Sells</p>
           <p className="text-sm font-bold text-destructive">{loading ? '…' : sellOrders}</p>
         </div>

@@ -505,3 +505,161 @@ export async function getLatestBlockHeight(): Promise<number> {
     return 0;
   }
 }
+
+// ─── v17 Contract Mappings ────────────────────────────────────────────────────
+
+/**
+ * Fetch orchestrator address from the `orchestrator` mapping.
+ * In v17, key is `true` → address
+ */
+export async function getOrchestratorAddress(): Promise<string | null> {
+  const raw = await fetchMappingValue('orchestrator', 'true');
+  if (!raw) return null;
+  try {
+    // Value is an address like "aleo1..."
+    const addr = raw.trim().replace(/"/g, '');
+    if (addr.startsWith('aleo1')) return addr;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch treasury address from the `treasury` mapping.
+ * In v17, key is `true` → address
+ */
+export async function getTreasuryAddress(): Promise<string | null> {
+  const raw = await fetchMappingValue('treasury', 'true');
+  if (!raw) return null;
+  try {
+    const addr = raw.trim().replace(/"/g, '');
+    if (addr.startsWith('aleo1')) return addr;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if an address is a registered keeper.
+ * In v17, keepers mapping: address → bool
+ */
+export async function isKeeper(address: string): Promise<boolean> {
+  const raw = await fetchMappingValue('keepers', address);
+  if (!raw) return false;
+  return raw.trim() === 'true';
+}
+
+/**
+ * Fetch token pair info from `token_pairs` mapping.
+ * In v17: TokenPair { quote_token_id: field, tick_size: u64, is_active: bool }
+ */
+export async function getTokenPairInfo(
+  pairId: number
+): Promise<{ quote_token_id: string; tick_size: number; is_active: boolean } | null> {
+  const raw = await fetchMappingValue('token_pairs', `${pairId}u64`);
+  if (!raw) return null;
+  try {
+    const fields = parseLeoValue(raw);
+    return {
+      quote_token_id: parseField(fields['quote_token_id'] || '0field'),
+      tick_size: parseU64(fields['tick_size'] || '100u64'),
+      is_active: parseBool(fields['is_active'] || 'false'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch trading volume for a pair from `pair_volume` mapping.
+ * In v17: pair_volume: u64 → u128
+ */
+export async function getPairVolume(pairId: number): Promise<bigint> {
+  const raw = await fetchMappingValue('pair_volume', `${pairId}u64`);
+  if (!raw) return 0n;
+  try {
+    return parseU128(raw.trim());
+  } catch {
+    return 0n;
+  }
+}
+
+// ─── Keeper Bot API ───────────────────────────────────────────────────────────
+
+export interface KeeperOrderBookResponse {
+  bids: Array<{ price: string; quantity: string; trader: string; orderId: string }>;
+  asks: Array<{ price: string; quantity: string; trader: string; orderId: string }>;
+  spread: string | null;
+  bestBid: string | null;
+  bestAsk: string | null;
+  lastScanAt: string | null;
+}
+
+export interface KeeperTradesResponse {
+  trades: Array<{
+    buyOrderId: string;
+    sellOrderId: string;
+    buyTrader: string;
+    sellTrader: string;
+    quantity: string;
+    price: string;
+    timestamp: string;
+  }>;
+}
+
+export interface KeeperHealthResponse {
+  status: string;
+  paused: boolean;
+  programId: string;
+  orderCount: number;
+  buyOrders: number;
+  sellOrders: number;
+  pendingCancellations: number;
+  lastScanAt: string | null;
+  lastMatchAt: string | null;
+  upSince: string;
+}
+
+/**
+ * Fetch order book data from keeper bot API
+ */
+export async function fetchKeeperOrderBook(): Promise<KeeperOrderBookResponse | null> {
+  try {
+    const res = await fetch(`${config.KEEPER_API_URL}/api/orderbook`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    qlog('keeper:orderbook:error', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch recent trades from keeper bot API
+ */
+export async function fetchKeeperTrades(): Promise<KeeperTradesResponse | null> {
+  try {
+    const res = await fetch(`${config.KEEPER_API_URL}/api/trades`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    qlog('keeper:trades:error', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch keeper bot health status
+ */
+export async function fetchKeeperHealth(): Promise<KeeperHealthResponse | null> {
+  try {
+    const res = await fetch(`${config.KEEPER_API_URL}/health`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    qlog('keeper:health:error', err);
+    return null;
+  }
+}

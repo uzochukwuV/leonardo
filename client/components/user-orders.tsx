@@ -2,11 +2,11 @@
 
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { Button } from '@/components/ui/button';
-import { X, TrendingUp, TrendingDown, RotateCw, Loader2 } from 'lucide-react';
+import { X, TrendingUp, TrendingDown, RotateCw, Loader2, Clock } from 'lucide-react';
 import { useUserOrders, type ParsedOrder } from '@/hooks/use-user-orders';
 import { useCancelOrder } from '@/hooks/use-cancel-order';
 import { useState } from 'react';
-import { config } from '@/lib/config';
+import { getTokenPair } from '@/lib/token-pairs';
 
 export function UserOrders() {
   const { address, connected } = useWallet();
@@ -28,26 +28,24 @@ export function UserOrders() {
     reset();
     setCancellingId(order.recordId);
 
-    // Get token ID from order or default to native credits
-    const tokenId = order.tokenId ?? config.NATIVE_CREDITS_ID;
-    const isNative = tokenId === config.NATIVE_CREDITS_ID;
-
-    // Calculate refund amount (full escrow for now - order.escrowedAmount if available)
-    // In v5, we need to pass the correct refund amount
-    const refundAmount = order.escrowedAmount ?? order.quantityRaw;
+    // v17: Use the Receipt record ciphertext for cancellation
+    if (!order.receiptCiphertext) {
+      setCancelError('Receipt record not found - cannot cancel');
+      setCancellingId(null);
+      return;
+    }
 
     const ok = await cancelOrder({
+      receiptRecord: order.receiptCiphertext,
       orderId: order.orderId,
-      tokenId,
-      refundAmount,
-      isNative,
+      isBuy: order.side === 'buy',
     });
 
     setCancellingId(null);
     if (ok) {
       refresh();
     } else {
-      setCancelError(cancelHookError ?? 'Cancel failed — check your wallet and try again');
+      setCancelError(cancelHookError ?? 'Cancel request failed — check your wallet and try again');
     }
   };
 
@@ -127,9 +125,9 @@ export function UserOrders() {
 
       <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/20">
         <p className="text-xs text-foreground leading-relaxed">
-          <span className="font-semibold">v5 Architecture:</span> Orders are stored in public
-          mappings for permissionless settlement. Your OrderReceipt proves ownership and allows
-          cancellation. Exact prices remain private until settlement.
+          <span className="font-semibold">v17 Architecture:</span> Your Receipt records prove order
+          ownership. To cancel, submit a cancellation request and the keeper will process the refund.
+          Orders are settled by the keeper when prices cross.
         </p>
       </div>
     </div>
@@ -144,6 +142,7 @@ interface OrderRowProps {
 
 function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
   const isBuy = order.side === 'buy';
+  const pair = getTokenPair(order.pairId);
 
   const formatTime = (ts: number) => {
     const mins = Math.floor((Date.now() - ts) / 60000);
@@ -156,6 +155,8 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
   const statusText = order.status ?? 'active';
   const statusColor = statusText === 'filled' ? 'text-accent' :
                       statusText === 'cancelled' ? 'text-muted-foreground' :
+                      statusText === 'pending_cancel' ? 'text-yellow-500' :
+                      statusText === 'partially_filled' ? 'text-blue-500' :
                       'text-foreground';
 
   return (
@@ -178,28 +179,35 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
               {isBuy ? 'BUY' : 'SELL'}
             </span>
             <span className={`text-xs ${statusColor}`}>
-              {statusText}
+              {statusText.replace('_', ' ')}
             </span>
+            {pair && (
+              <span className="text-xs text-muted-foreground">
+                {pair.name}
+              </span>
+            )}
           </div>
 
           <p className="text-xs text-muted-foreground mb-1">
-            Limit: ${order.limitPriceUsd.toFixed(4)}
+            Limit: ${order.priceUsd.toFixed(4)} • Qty: {(Number(order.quantityRaw) / 1e6).toFixed(2)}
           </p>
-          <p className="text-xs text-muted-foreground">
-            Qty: {(Number(order.quantityRaw) / 1e6).toFixed(2)} • {formatTime(order.timestamp)}
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {formatTime(order.createdAtMs)}
           </p>
-          <p className="text-xs text-muted-foreground font-mono truncate">
-            ID: {order.orderId.slice(0, 16)}...
+          <p className="text-xs text-muted-foreground font-mono truncate mt-1">
+            ID: {order.orderId.slice(0, 20)}...
           </p>
         </div>
 
-        {statusText === 'active' && (
+        {(statusText === 'active' || statusText === 'partially_filled') && (
           <Button
             onClick={onCancel}
             disabled={cancelling}
             size="sm"
             variant="ghost"
             className="text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
+            title="Request cancellation"
           >
             {cancelling ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -210,9 +218,17 @@ function OrderRow({ order, onCancel, cancelling }: OrderRowProps) {
         )}
       </div>
 
+      {/* Escrow info */}
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Escrow</span>
+        <span className="font-mono">
+          {(Number(order.escrowAmount) / 1e6).toFixed(4)} {isBuy ? pair?.quoteToken.symbol ?? 'QUOTE' : 'ALEO'}
+        </span>
+      </div>
+
       {/* Fill Progress (if available) */}
       {order.filled !== undefined && order.filled > 0n && (
-        <div>
+        <div className="mt-2">
           <div className="flex items-center justify-between mb-1">
             <p className="text-xs text-muted-foreground">Filled</p>
             <p className="text-xs font-mono text-foreground">

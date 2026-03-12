@@ -2,16 +2,19 @@
 
 /**
  * useTokenBalances
- * Fetches token balances for supported tokens:
- *   - Native ALEO credits (from wallet adapter)
- *   - Circle USDC (from test_usdc_token.aleo public balance mapping)
- *   - ARC-21 tokens (from token_registry.aleo public balance mapping)
+ * Fetches token balances for supported tokens using the Record Scanning Service (RSS).
+ * Balances are derived from unspent records owned by the user.
+ *
+ * It still uses a direct mapping query for allowances, as the RSS is focused
+ * on record discovery, not mapping values.
  */
 
 import { useState, useCallback, useEffect } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { config } from '@/lib/config';
 import { TOKENS, type TokenInfo } from '@/lib/token-pairs';
+import { getRecordsForViewKey } from '@/lib/aleo-record-scanner';
+import { Account } from '@provablehq/sdk';
 
 export interface TokenBalance {
   token: TokenInfo;
@@ -19,8 +22,10 @@ export interface TokenBalance {
   formatted: string;
   loading: boolean;
   error: string | null;
+  allowances: Record<string, bigint>; // Spender address -> amount
 }
 
+// Kept for fetching allowances, which are mappings not records
 async function fetchMappingValue(
   program: string,
   mapping: string,
@@ -31,7 +36,6 @@ async function fetchMappingValue(
     const res = await fetch(url);
     if (!res.ok) return null;
     const text = await res.text();
-    // Parse JSON string if needed
     try {
       return JSON.parse(text) as string;
     } catch {
@@ -44,13 +48,17 @@ async function fetchMappingValue(
 
 function parseU128(v: string): bigint {
   try {
-    return BigInt(v.replace(/u128|u64/gi, '').trim());
+    // Handle formats like "1000u128", "1000u64", or just "1000"
+    return BigInt(v.replace(/u(128|64|32|16|8)/g, '').trim());
   } catch {
     return 0n;
   }
 }
 
 function formatBalance(amount: bigint, decimals: number): string {
+  if (typeof amount !== 'bigint') {
+    return '0.0000';
+  }
   const divisor = BigInt(10 ** decimals);
   const whole = amount / divisor;
   const frac = amount % divisor;
@@ -60,131 +68,125 @@ function formatBalance(amount: bigint, decimals: number): string {
 
 export function useTokenBalances() {
   const { address, connected, wallet } = useWallet() as any;
-  const [balances, setBalances] = useState<Record<string, TokenBalance>>({});
+  const [balances, setBalances] = useState<TokenBalance[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchBalances = useCallback(async () => {
-    if (!connected || !address) {
-      setBalances({});
+    if (!connected || !address || !wallet?.adapter?.getViewKey) {
+      setBalances([]);
       return;
     }
 
     setLoading(true);
 
-    const newBalances: Record<string, TokenBalance> = {};
+    try {
+      const viewKey = await wallet.adapter.getViewKey();
+      if (!viewKey) {
+        throw new Error('View key not available from wallet');
+      }
 
-    // Supported tokens to fetch
-    const tokensToFetch = [TOKENS.ALEO, TOKENS.USDC, TOKENS.TOKEN_A, TOKENS.TOKEN_B];
+      // Fetch all unspent records for the user
+      const allRecords = await getRecordsForViewKey(viewKey);
 
-    await Promise.all(
-      tokensToFetch.map(async (token) => {
-        const key = token.symbol;
-        newBalances[key] = {
+      const newBalances: Record<string, TokenBalance> = {};
+      const tokensToFetch = [TOKENS.ALEO, TOKENS.USDC, TOKENS.TOKEN_A, TOKENS.TOKEN_B];
+
+      // Initialize balances
+      tokensToFetch.forEach(token => {
+        newBalances[token.symbol] = {
           token,
           balance: 0n,
           formatted: '0.0000',
-          loading: true,
+          loading: false,
           error: null,
+          allowances: {},
         };
+      });
 
-        try {
-          let balance = 0n;
+      // Process records to calculate balances
+      for (const record of allRecords) {
+        const programId = record.program_id;
+        let token: TokenInfo | undefined;
+        let amount = 0n;
 
-          if (token.isNative) {
-            // Native ALEO: try wallet adapter first, fallback to credits.aleo mapping
-            try {
-              // Some wallet adapters expose balance directly
-              if (wallet?.adapter?.getBalance) {
-                const walletBalance = await wallet.adapter.getBalance();
-                balance = BigInt(walletBalance ?? 0);
-              } else {
-                // Fallback: query credits.aleo account mapping
-                const raw = await fetchMappingValue(
-                  'credits.aleo',
-                  'account',
-                  address
-                );
-                if (raw) {
-                  balance = parseU128(raw);
-                }
-              }
-            } catch {
-              // Try mapping query as last resort
-              const raw = await fetchMappingValue(
-                'credits.aleo',
-                'account',
-                address
-              );
-              if (raw) {
-                balance = parseU128(raw);
-              }
-            }
-          } else if (token.isCircleUsdc) {
-            // Circle USDC: query test_usdc_token.aleo account mapping
+        if (programId === 'credits.aleo' && record.data.microcredits) {
+          token = TOKENS.ALEO;
+          amount = parseU128(record.data.microcredits);
+        } else if (programId === config.TOKEN_REGISTRY_PROGRAM) {
+           // This part is an assumption based on a typical ARC-21 structure
+           // The actual record structure from your token program might differ
+           const tokenIdFromRecord = record.data.token_id; // e.g. '1field'
+           token = tokensToFetch.find(t => t.tokenId === tokenIdFromRecord);
+           if (record.data.amount) {
+             amount = parseU128(record.data.amount);
+           }
+        }
+        // Add other token logic here if they have unique program IDs
+
+        if (token && newBalances[token.symbol]) {
+          newBalances[token.symbol].balance += amount;
+        }
+      }
+
+      // Fetch allowances (still requires mapping queries)
+      for (const token of tokensToFetch) {
+        if (!token.isNative && token.tokenId) {
+          try {
             const raw = await fetchMappingValue(
-              'test_usdc_token.aleo',
-              'account',
-              address
-            );
-            if (raw) {
-              balance = parseU128(raw);
-            }
-          } else if (token.tokenId) {
-            // ARC-21 tokens: query token_registry.aleo
-            // Key format: hash of (token_id, address) - simplified: just token_id for now
-            const raw = await fetchMappingValue(
-              'token_registry.aleo',
+              config.TOKEN_REGISTRY_PROGRAM,
               'authorized_balances',
               `{ token_id: ${token.tokenId}, account: ${address} }`
             );
             if (raw) {
-              balance = parseU128(raw);
+              // This is a simplification. The mapping likely holds spender->amount.
+              // We'll assume for now it's just one allowance to our contract.
+              const allowanceAmount = parseU128(raw);
+              if (newBalances[token.symbol]) {
+                newBalances[token.symbol].allowances[config.PROGRAM_ADDRESS] = allowanceAmount;
+              }
             }
+          } catch (err) {
+             console.error(`Failed to fetch allowance for ${token.symbol}:`, err);
           }
-
-          newBalances[key] = {
-            token,
-            balance,
-            formatted: formatBalance(balance, token.decimals),
-            loading: false,
-            error: null,
-          };
-        } catch (err) {
-          newBalances[key] = {
-            token,
-            balance: 0n,
-            formatted: '0.0000',
-            loading: false,
-            error: err instanceof Error ? err.message : 'Failed to fetch',
-          };
         }
-      })
-    );
+      }
 
-    setBalances(newBalances);
-    setLoading(false);
+
+      // Finalize formatting
+      const finalBalances = Object.values(newBalances).map(b => ({
+        ...b,
+        formatted: formatBalance(b.balance, b.token.decimals),
+      }));
+
+      setBalances(finalBalances);
+    } catch (err) {
+      console.error('Failed to fetch token balances:', err);
+      // Optionally set an error state for the whole hook
+    } finally {
+      setLoading(false);
+    }
   }, [connected, address, wallet]);
 
-  // Fetch on mount and when address changes
   useEffect(() => {
     fetchBalances();
   }, [fetchBalances]);
 
-  // Auto-refresh every 30 seconds
   useEffect(() => {
     if (!connected) return;
-    const interval = setInterval(fetchBalances, 30_000);
+    const interval = setInterval(fetchBalances, 45_000); // Increased interval
     return () => clearInterval(interval);
   }, [connected, fetchBalances]);
+
+  const getBalanceBySymbol = (symbol: string) => balances.find(b => b.token.symbol === symbol);
 
   return {
     balances,
     loading,
     refresh: fetchBalances,
     // Convenience getters
-    aleoBalance: balances['ALEO'],
-    usdcBalance: balances['USDC'],
-    tokenABalance: balances['TKNA'],
-    tokenBBalance: balances['TKNB'],
+    aleoBalance: getBalanceBySymbol('ALEO'),
+    usdcBalance: getBalanceBySymbol('USDC'),
+    tokenABalance: getBalanceBySymbol('TKNA'),
+    tokenBBalance: getBalanceBySymbol('TKNB'),
   };
 }

@@ -1,18 +1,12 @@
 {
-  "program": "private_orderbook_0000v8testnet.aleo",
+  "program": "private_orderbook_v17.aleo",
   "version": "0.1.0",
-  "description": "Private tick-based order book with ZK proofs - Fixed architecture",
+  "description": "Private tick-based order book with multi-token support via token_registry",
   "license": "MIT",
   "leo": "3.4.0",
   "dependencies": [
     {
       "name": "token_registry.aleo",
-      "location": "network",
-      "path": null,
-      "edition": 1
-    },
-    {
-      "name": "test_usdc_token.aleo",
       "location": "network",
       "path": null,
       "edition": 1

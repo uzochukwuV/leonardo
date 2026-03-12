@@ -11,12 +11,14 @@ export default function Home() {
   const { address, requestRecords, decrypt, executeTransaction } = useWallet();
 
   useEffect(() => {
-    if (address) {
-      requestRecords('private_orderbook_v4.aleo').then((records) => {
-        console.log(records);
+    if (address && requestRecords) {
+      requestRecords('private_orderbook_v17.aleo').then((records) => {
+        console.log('User records:', records);
+      }).catch(() => {
+        // Ignore errors - user may not have records
       });
     }
-  }, [address]);
+  }, [address, requestRecords]);
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />

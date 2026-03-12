@@ -1,37 +1,17 @@
 {
-  "name": "orderbook-matcher",
+  "name": "orderbook-keeper",
   "version": "1.0.0",
-  "description": "Off-chain matcher service for private tick-based order book",
-  "main": "dist/index.js",
+  "description": "Private Orderbook Keeper Bot for Aleo",
+  "type": "module",
+  "main": "orderbook-keeper.mjs",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts",
-    "test": "jest",
-    "lint": "eslint src --ext .ts"
+    "start": "node orderbook-keeper.mjs",
+    "dev": "node orderbook-keeper.mjs"
   },
-  "keywords": [
-    "aleo",
-    "orderbook",
-    "matcher",
-    "defi",
-    "privacy"
-  ],
-  "author": "",
-  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "@aleohq/sdk": "^0.6.9",
-    "axios": "^1.6.7",
-    "dotenv": "^16.4.5",
-    "winston": "^3.11.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.11.5",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0",
-    "eslint": "^8.56.0",
-    "jest": "^29.7.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "dotenv": "^16.0.0"
   }
 }

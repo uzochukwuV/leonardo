@@ -2,66 +2,61 @@
 
 /**
  * useSettle
- * Two-step settlement for v5 contract:
- *   1. settle_match(buy_order_id, sell_order_id, timestamp) - validates and updates orders
- *   2. execute_transfers_* - transfers tokens based on token types
- *
- * Contract signatures:
- *   settle_match(public buy_order_id: field, public sell_order_id: field, public timestamp: u32)
- *   execute_transfers_arc21(buy_order_id, sell_order_id, base_token_id, quote_token_id, fill_qty, quote_amount, seller_receives, settler_fee, buyer, seller)
- *   execute_transfers_credits_base(buy_order_id, sell_order_id, quote_token_id, fill_qty, quote_amount, seller_receives, settler_fee, buyer, seller)
- *   execute_transfers_credits_quote(buy_order_id, sell_order_id, base_token_id, fill_qty, seller_receives, settler_fee, buyer, seller)
- *   execute_transfers_credits_both(buy_order_id, sell_order_id, fill_qty, seller_receives, settler_fee, buyer, seller)
+ * Settlement for private_orderbook_v17.aleo
+ * 
+ * IMPORTANT: In v17, settle_match is a KEEPER-ONLY function.
+ * Regular users cannot settle orders - only the orchestrator/keeper can.
+ * 
+ * Contract function:
+ *   settle_match(
+ *     buy_order: Order,      // Record owned by keeper
+ *     sell_order: Order,     // Record owned by keeper
+ *     fill_quantity: u128,
+ *     fill_price: u64,       // Must be within bid-ask spread
+ *     timestamp: u32,
+ *     treasury_addr: address
+ *   ) -> (Order, Order, SettlementProof, SettlementProof, Future)
+ * 
+ * The function returns updated Order records (for partial fills) and 
+ * SettlementProof records for both traders.
+ * 
+ * Fee calculation:
+ *   - settler_fee = quote_amount * 10 / 10000 (0.10%)
+ *   - protocol_fee = quote_amount * 5 / 10000 (0.05%)
+ *   - seller_receives = quote_amount - settler_fee - protocol_fee
  */
 
 import { useState, useCallback } from 'react';
 import { useContract } from './use-contract';
 import { config } from '@/lib/config';
 
-export type TokenTransferType = 'arc21' | 'credits_base' | 'credits_quote' | 'credits_both' | 'usdc_quote' | 'arc21_usdc';
-export type SettleStep = 'idle' | 'settling' | 'transferring' | 'done';
+export type SettleStep = 'idle' | 'settling' | 'done';
 
-export interface SettleParams {
-  /** Buy order ID (field) */
-  buyOrderId: string;
-  /** Sell order ID (field) */
-  sellOrderId: string;
-  /** Base token ID */
-  baseTokenId: string;
-  /** Quote token ID */
-  quoteTokenId: string;
-  /** Fill quantity (base token units) */
-  fillQty: bigint;
-  /** Quote amount (quote token units) */
-  quoteAmount: bigint;
-  /** Amount seller receives after fees */
-  sellerReceives: bigint;
-  /** Fee for settler */
-  settlerFee: bigint;
-  /** Buyer address */
-  buyer: string;
-  /** Seller address */
-  seller: string;
+export interface OrderRecord {
+  owner: string;
+  trader: string;
+  order_id: string;
+  pair_id: number;
+  is_buy: boolean;
+  price: number;
+  quantity: bigint;
+  quote_token_id: string;
+  escrow_amount: bigint;
+  filled: bigint;
+  created_at: number;
+  expires_at: number;
 }
 
-/**
- * Determine transfer type based on token IDs
- */
-function getTransferType(baseTokenId: string, quoteTokenId: string): TokenTransferType {
-  const baseNative = baseTokenId === config.NATIVE_CREDITS_ID;
-  const quoteNative = quoteTokenId === config.NATIVE_CREDITS_ID;
-  const quoteCircleUsdc = quoteTokenId === config.CIRCLE_USDC_ID;
-
-  if (baseNative && quoteNative) return 'credits_both';
-  if (baseNative && quoteCircleUsdc) return 'usdc_quote';  // ALEO/USDC
-  if (baseNative) return 'credits_base';
-  if (quoteNative) return 'credits_quote';
-  if (quoteCircleUsdc) return 'arc21_usdc';  // TOKEN/USDC
-  return 'arc21';
+export interface SettleParams {
+  buyOrder: OrderRecord;
+  sellOrder: OrderRecord;
+  fillQuantity: bigint;
+  fillPrice: number;
+  treasuryAddr: string;
 }
 
 export function useSettle() {
-  const { connected, execTx, pollTx } = useContract();
+  const { connected, address, execTx, pollTx } = useContract();
   const [step, setStep] = useState<SettleStep>('idle');
   const [txId, setTxId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,38 +70,89 @@ export function useSettle() {
   const settle = useCallback(
     async (params: SettleParams): Promise<string | null> => {
       const {
-        buyOrderId,
-        sellOrderId,
-        baseTokenId,
-        quoteTokenId,
-        fillQty,
-        quoteAmount,
-        sellerReceives,
-        settlerFee,
-        buyer,
-        seller,
+        buyOrder,
+        sellOrder,
+        fillQuantity,
+        fillPrice,
+        treasuryAddr,
       } = params;
 
       setError(null);
       setTxId(null);
 
-      if (!connected) {
+      if (!connected || !address) {
         setError('Connect your wallet first');
+        return null;
+      }
+
+      // Validate orders
+      if (buyOrder.is_buy !== true || sellOrder.is_buy !== false) {
+        setError('Invalid order types: buy order must have is_buy=true, sell order must have is_buy=false');
+        return null;
+      }
+
+      if (buyOrder.pair_id !== sellOrder.pair_id) {
+        setError('Orders must be for the same pair');
+        return null;
+      }
+
+      if (buyOrder.quote_token_id !== sellOrder.quote_token_id) {
+        setError('Orders must use the same quote token');
+        return null;
+      }
+
+      // Price must be within spread
+      if (fillPrice < sellOrder.price || fillPrice > buyOrder.price) {
+        setError(`Fill price must be within bid-ask spread: ${sellOrder.price} - ${buyOrder.price}`);
+        return null;
+      }
+
+      // Validate quantities
+      const buyRemaining = buyOrder.quantity - buyOrder.filled;
+      const sellRemaining = sellOrder.quantity - sellOrder.filled;
+      if (fillQuantity <= 0n || fillQuantity > buyRemaining || fillQuantity > sellRemaining) {
+        setError('Invalid fill quantity');
         return null;
       }
 
       try {
         const timestamp = Math.floor(Date.now() / 1000);
 
-        // Step 1: settle_match - validates and updates order state
         setStep('settling');
+        
+        // In v17, we pass the order records as structured inputs
+        // The contract expects them in a specific format
         const settleTxId = await execTx({
           program: config.CONTRACT_PROGRAM_ID,
           function: 'settle_match',
           inputs: [
-            buyOrderId,
-            sellOrderId,
+            // Buy order
+            buyOrder.order_id,
+            `${buyOrder.pair_id}u64`,
+            `${buyOrder.is_buy}`,
+            `${buyOrder.price}u64`,
+            `${buyOrder.quantity}u128`,
+            buyOrder.quote_token_id,
+            `${buyOrder.escrow_amount}u128`,
+            `${buyOrder.filled}u128`,
+            `${buyOrder.created_at}u32`,
+            `${buyOrder.expires_at}u32`,
+            // Sell order  
+            sellOrder.order_id,
+            `${sellOrder.pair_id}u64`,
+            `${sellOrder.is_buy}`,
+            `${sellOrder.price}u64`,
+            `${sellOrder.quantity}u128`,
+            sellOrder.quote_token_id,
+            `${sellOrder.escrow_amount}u128`,
+            `${sellOrder.filled}u128`,
+            `${sellOrder.created_at}u32`,
+            `${sellOrder.expires_at}u32`,
+            // Fill parameters
+            `${fillQuantity}u128`,
+            `${fillPrice}u64`,
             `${timestamp}u32`,
+            treasuryAddr,
           ],
           fee: config.DEFAULT_FEE,
           privateFee: false,
@@ -114,161 +160,51 @@ export function useSettle() {
 
         const settleResult = await pollTx(settleTxId);
         if (settleResult.status === 'rejected') {
-          throw new Error('Settlement validation rejected on-chain');
+          throw new Error('Settlement rejected on-chain');
         }
 
-        // Step 2: execute_transfers - transfer tokens based on type
-        setStep('transferring');
-        const transferType = getTransferType(baseTokenId, quoteTokenId);
-
-        let transferTxId: string;
-
-        switch (transferType) {
-          case 'arc21':
-            // Both tokens are ARC-21
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_arc21',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                baseTokenId,
-                quoteTokenId,
-                `${fillQty}u128`,
-                `${quoteAmount}u128`,
-                `${sellerReceives}u128`,
-                `${settlerFee}u128`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-
-          case 'credits_base':
-            // Base is native ALEO, quote is ARC-21
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_credits_base',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                quoteTokenId,
-                `${fillQty}u64`, // Native uses u64
-                `${quoteAmount}u128`,
-                `${sellerReceives}u128`,
-                `${settlerFee}u128`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-
-          case 'credits_quote':
-            // Base is ARC-21, quote is native ALEO
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_credits_quote',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                baseTokenId,
-                `${fillQty}u128`,
-                `${sellerReceives}u64`, // Native uses u64
-                `${settlerFee}u64`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-
-          case 'credits_both':
-            // Both are native ALEO
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_credits_both',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                `${fillQty}u64`,
-                `${sellerReceives}u64`,
-                `${settlerFee}u64`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-
-          case 'usdc_quote':
-            // Base is native ALEO, quote is Circle USDC
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_usdc_quote',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                `${fillQty}u64`,        // Native ALEO uses u64
-                `${sellerReceives}u128`, // Circle USDC uses u128
-                `${settlerFee}u128`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-
-          case 'arc21_usdc':
-            // Base is ARC-21, quote is Circle USDC
-            transferTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'execute_transfers_arc21_usdc',
-              inputs: [
-                buyOrderId,
-                sellOrderId,
-                baseTokenId,
-                `${fillQty}u128`,
-                `${sellerReceives}u128`, // Circle USDC uses u128
-                `${settlerFee}u128`,
-                buyer,
-                seller,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-            break;
-        }
-
-        const transferResult = await pollTx(transferTxId);
-        if (transferResult.status === 'rejected') {
-          throw new Error('Token transfer rejected on-chain');
-        }
-
-        setTxId(transferResult.onChainId);
+        setTxId(settleResult.onChainId);
         setStep('done');
-        return transferResult.onChainId;
+        return settleResult.onChainId;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Settlement failed');
         setStep('idle');
         return null;
       }
     },
-    [connected, execTx, pollTx]
+    [connected, address, execTx, pollTx]
   );
 
   const stepLabel: Record<SettleStep, string> = {
     idle: '',
-    settling: 'Validating match...',
-    transferring: 'Executing transfers...',
+    settling: 'Settling orders...',
     done: 'Settlement complete!',
   };
 
   return { settle, step, stepLabel, txId, error, reset };
+}
+
+/**
+ * Calculate settlement amounts based on fill quantity and price
+ */
+export function calculateSettlementAmounts(
+  fillQuantity: bigint,
+  fillPriceBps: number
+): {
+  quoteAmount: bigint;
+  settlerFee: bigint;
+  protocolFee: bigint;
+  sellerReceives: bigint;
+} {
+  const quoteAmount = (fillQuantity * BigInt(fillPriceBps)) / BigInt(10000);
+  const settlerFee = (quoteAmount * BigInt(config.SETTLER_FEE_BPS)) / BigInt(10000);
+  const protocolFee = (quoteAmount * BigInt(config.PROTOCOL_FEE_BPS)) / BigInt(10000);
+  const sellerReceives = quoteAmount - settlerFee - protocolFee;
+
+  return {
+    quoteAmount,
+    settlerFee,
+    protocolFee,
+    sellerReceives,
+  };
 }

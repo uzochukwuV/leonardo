@@ -2,144 +2,149 @@
 
 /**
  * useCancelOrder
- * Two-step cancellation flow for v5 contract:
- *   1. cancel_order(order_id) - Marks order as cancelled
- *   2. withdraw_cancelled_credits(order_id, amount) - For native ALEO
- *      OR withdraw_cancelled_usdc(order_id, amount) - For Circle USDC
- *      OR withdraw_cancelled(order_id, token_id, amount) - For ARC-21 tokens
+ * Two-step cancellation flow for v17 contract:
  *
- * Contract signatures (main.leo):
- *   cancel_order(public order_id: field)
- *   withdraw_cancelled_credits(public order_id: field, public amount: u64)
- *   withdraw_cancelled_usdc(public order_id: field, public amount: u128)
- *   withdraw_cancelled(public order_id: field, public token_id: field, public amount: u128)
+ * Step 1 (Trader calls): request_cancel(receipt, keeper_addr, timestamp)
+ *   - Uses trader's Receipt record as proof of order ownership
+ *   - Creates CancellationRequest record owned by keeper
+ *   - Returns: (CancellationRequest, Future)
+ *
+ * Step 2 (Keeper processes): cancel_buy_order or cancel_sell_order
+ *   - Keeper sees CancellationRequest and processes it
+ *   - Refunds tokens to trader
+ *   - Returns: (CancellationProof, Future)
+ *
+ * From trader's perspective, they only call request_cancel and wait.
+ * The keeper bot automatically processes the cancellation.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useContract } from './use-contract';
 import { config } from '@/lib/config';
+import { getOrchestratorAddress } from '@/lib/aleo-service';
 
 export interface CancelOrderParams {
-  /** The on-chain order_id field */
+  /** The Receipt record ciphertext (user's proof of order) */
+  receiptRecord: string;
+  /** The on-chain order_id field (from Receipt) */
   orderId: string;
-  /** Token ID for the escrowed token */
-  tokenId: string;
-  /** Amount to withdraw (refund) */
-  refundAmount: bigint;
-  /** Whether this is native ALEO credits (tokenId === '0field') */
-  isNative?: boolean;
-  /** Whether this is Circle USDC (tokenId === '1field') */
-  isCircleUsdc?: boolean;
+  /** Is this a buy order? */
+  isBuy: boolean;
 }
 
-export type CancelStep = 'idle' | 'cancelling' | 'withdrawing' | 'done';
+export type CancelStep = 'idle' | 'requesting' | 'polling' | 'done';
 
 export function useCancelOrder() {
   const { connected, execTx, pollTx } = useContract();
   const [step, setStep] = useState<CancelStep>('idle');
+  const [txId, setTxId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [orchestratorAddr, setOrchestratorAddr] = useState<string | null>(null);
+
+  // Fetch orchestrator/keeper address on mount
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchOrchestrator() {
+      try {
+        const addr = await getOrchestratorAddress();
+        if (mounted && addr) {
+          setOrchestratorAddr(addr);
+        }
+      } catch (err) {
+        console.error('Failed to fetch orchestrator:', err);
+      }
+    }
+
+    fetchOrchestrator();
+    return () => { mounted = false; };
+  }, []);
 
   const reset = useCallback(() => {
     setStep('idle');
+    setTxId(null);
     setError(null);
   }, []);
 
+  /**
+   * Request cancellation of an order.
+   * User submits their Receipt record; keeper will process the refund.
+   */
   const cancelOrder = useCallback(
     async (params: CancelOrderParams): Promise<boolean> => {
-      const { orderId, tokenId, refundAmount, isNative, isCircleUsdc } = params;
+      const { receiptRecord } = params;
 
       setError(null);
+      setTxId(null);
 
       if (!connected) {
         setError('Connect your wallet first');
         return false;
       }
 
+      if (!orchestratorAddr) {
+        setError('Keeper address not loaded. Please try again.');
+        return false;
+      }
+
+      if (!receiptRecord) {
+        setError('Receipt record required for cancellation');
+        return false;
+      }
+
       try {
-        // Step 1: Cancel the order (marks as cancelled in mapping)
-        setStep('cancelling');
+        const timestamp = Math.floor(Date.now() / 1000);
+
+        // Call request_cancel with the Receipt record
+        // Function signature: request_cancel(receipt: Receipt, keeper_addr: address, timestamp: u32)
+        setStep('requesting');
         const cancelTxId = await execTx({
           program: config.CONTRACT_PROGRAM_ID,
-          function: 'cancel_order',
-          inputs: [orderId],
+          function: 'request_cancel',
+          inputs: [
+            receiptRecord,             // Receipt record (ciphertext)
+            orchestratorAddr,          // keeper_addr
+            `${timestamp}u32`,         // timestamp
+          ],
           fee: config.DEFAULT_FEE,
           privateFee: false,
         });
 
+        setStep('polling');
         const cancelResult = await pollTx(cancelTxId);
         if (cancelResult.status === 'rejected') {
-          throw new Error('Cancel transaction rejected on-chain');
+          throw new Error('Cancellation request rejected on-chain');
         }
 
-        // Step 2: Withdraw the refund
-        setStep('withdrawing');
-
-        // Determine token type for withdrawal
-        const useNative = isNative ?? tokenId === config.NATIVE_CREDITS_ID;
-        const useCircleUsdc = isCircleUsdc ?? tokenId === config.CIRCLE_USDC_ID;
-
-        let withdrawTxId: string;
-        if (useNative) {
-          // Native ALEO credits withdrawal
-          withdrawTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'withdraw_cancelled_credits',
-            inputs: [
-              orderId,
-              `${refundAmount}u64`, // Native credits use u64
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-        } else if (useCircleUsdc) {
-          // Circle USDC withdrawal
-          withdrawTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'withdraw_cancelled_usdc',
-            inputs: [
-              orderId,
-              `${refundAmount}u128`, // Circle USDC uses u128
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-        } else {
-          // ARC-21 token withdrawal
-          withdrawTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'withdraw_cancelled',
-            inputs: [
-              orderId,
-              tokenId,
-              `${refundAmount}u128`,
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-        }
-
-        const withdrawResult = await pollTx(withdrawTxId);
-        if (withdrawResult.status === 'rejected') {
-          throw new Error('Withdrawal transaction rejected on-chain');
-        }
-
+        setTxId(cancelResult.onChainId);
         setStep('done');
+
+        // Note: The actual refund happens when the keeper processes the CancellationRequest.
+        // The user will receive a CancellationProof record when complete.
         return true;
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Cancel failed');
+        setError(err instanceof Error ? err.message : 'Cancel request failed');
         setStep('idle');
         return false;
       }
     },
-    [connected, execTx, pollTx]
+    [connected, execTx, pollTx, orchestratorAddr]
   );
 
   const stepLabel: Record<CancelStep, string> = {
     idle: '',
-    cancelling: 'Cancelling order...',
-    withdrawing: 'Withdrawing funds...',
-    done: 'Order cancelled!',
+    requesting: 'Submitting cancellation request...',
+    polling: 'Waiting for confirmation...',
+    done: 'Cancellation requested! Keeper will process refund.',
   };
 
-  return { cancelOrder, step, stepLabel, error, reset };
+  return {
+    cancelOrder,
+    step,
+    stepLabel,
+    txId,
+    error,
+    reset,
+    orchestratorAddr,
+  };
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
@@ -11,8 +11,9 @@ import {
   priceToBasisPoints,
 } from '@/lib/token-pairs';
 import { config } from '@/lib/config';
-import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown, Wifi, WifiOff } from 'lucide-react';
 import { useSubmitOrder } from '@/hooks/use-submit-order';
+import { useTokenBalances } from '@/hooks/use-token-balances'; // For checking allowance
 
 interface OrderPlacementFormProps {
   selectedPairId: number;
@@ -41,16 +42,29 @@ export function OrderPlacementForm({
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [limitPrice, setLimitPrice] = useState(config.BASE_PRICE.toString());
   const [quantity, setQuantity] = useState('');
-  const [rangeWidth, setRangeWidth] = useState('0.50');
   const [expiresAt, setExpiresAt] = useState(0);
   const [showPairs, setShowPairs] = useState(false);
+  const [needsApproval, setNeedsApproval] = useState(false);
 
-  const { submitOrder, step, stepLabel, txId, error, reset } = useSubmitOrder();
+  const {
+    approveQuoteTokens,
+    submitOrder,
+    step,
+    stepLabel,
+    txId,
+    approvalTxId,
+    error,
+    reset,
+    orchestratorAddr,
+    loadingOrchestrator,
+  } = useSubmitOrder();
+
+  const { balances, loading: loadingBalances } = useTokenBalances();
+
   const submitting = step !== 'idle' && step !== 'done';
   const success = step === 'done';
 
   const pair = getTokenPair(selectedPairId);
-  const activePairs = getAllActiveTokenPairs();
 
   // Consume prefill price from order book click
   useEffect(() => {
@@ -60,16 +74,45 @@ export function OrderPlacementForm({
     }
   }, [prefillPrice, onPrefillConsumed]);
 
-  if (!pair) return null;
-
   const isBuy = side === 'buy';
-  const escrowToken = isBuy ? pair.quoteToken : pair.baseToken;
   const price = parseFloat(limitPrice) || 0;
   const qty = parseFloat(quantity) || 0;
-  const rw = parseFloat(rangeWidth) || 0.5;
 
-  const tickLowerUsd = Math.max(pair.minPrice / 10000, price - rw / 2);
-  const tickUpperUsd = tickLowerUsd + rw;
+  // Check for approval requirement
+  useEffect(() => {
+    if (!connected || !pair || !isBuy || loadingBalances || !address) {
+      setNeedsApproval(false);
+      return;
+    }
+
+    const quoteToken = balances.find(b => b.tokenId === pair.quoteToken.tokenId);
+    const quantityRaw = BigInt(Math.floor(qty * Math.pow(10, pair.baseToken.decimals)));
+    const priceBps = BigInt(priceToBasisPoints(price));
+    const requiredEscrow = calculateEscrowAmount(isBuy, quantityRaw, priceBps);
+
+    if (requiredEscrow > 0) {
+      const allowance = quoteToken?.allowances?.[config.PROGRAM_ADDRESS] || 0n;
+      setNeedsApproval(allowance < requiredEscrow);
+    } else {
+      setNeedsApproval(false);
+    }
+  }, [isBuy, qty, price, connected, pair, balances, loadingBalances, address]);
+
+  // Reset form state on side or pair change
+  const resetFormState = useCallback(() => {
+    reset();
+    setQuantity('');
+  }, [reset]);
+
+  useEffect(() => {
+    resetFormState();
+  }, [side, selectedPairId, resetFormState]);
+
+
+  if (!pair) return null;
+
+  const activePairs = getAllActiveTokenPairs();
+  const escrowToken = isBuy ? pair.quoteToken : pair.baseToken;
 
   // Live escrow calculation
   const quantityRaw = BigInt(Math.floor(qty * Math.pow(10, pair.baseToken.decimals)));
@@ -79,16 +122,26 @@ export function OrderPlacementForm({
   const escrowDisplay = (Number(escrowRaw) / Math.pow(10, escrowToken.decimals)).toFixed(4);
   const valueUsd = (qty * price).toFixed(2);
 
+  const handleApprove = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!price || price <= 0 || !qty || qty <= 0) return;
+
+    await approveQuoteTokens({
+      pairId: selectedPairId,
+      isBuy,
+      limitPriceUsd: price,
+      quantity: qty,
+      expiresAt,
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    reset();
     if (!price || price <= 0 || !qty || qty <= 0) return;
 
     const result = await submitOrder({
       pairId: selectedPairId,
       isBuy,
-      tickLowerUsd,
-      tickUpperUsd,
       limitPriceUsd: price,
       quantity: qty,
       expiresAt,
@@ -100,56 +153,62 @@ export function OrderPlacementForm({
     }
   };
 
-  // Step indicator items
   const stepItems = [
-    { id: 'approving', label: `Approve ${escrowToken.symbol}` },
+    { id: 'approving', label: 'Approve' },
     { id: 'submitting', label: 'Submit order' },
-    { id: 'polling', label: 'Confirming' },
+    { id: 'polling-order', label: 'Confirming' },
   ];
+
+  const canSubmit = connected && !loadingOrchestrator && orchestratorAddr && qty > 0 && price > 0;
+  const showApprovalButton = isBuy && needsApproval;
+
+  const getButtonText = () => {
+    if (submitting) {
+      return (
+        <span className="flex items-center gap-2 justify-center">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {stepLabel[step]}
+        </span>
+      );
+    }
+    if (loadingOrchestrator || loadingBalances) {
+      return (
+        <span className="flex items-center gap-2 justify-center">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading...
+        </span>
+      );
+    }
+    if (showApprovalButton) {
+      return `Approve ${pair.quoteToken.symbol} to continue`;
+    }
+    return `${isBuy ? 'Buy' : 'Sell'} ${pair.baseToken.symbol}`;
+  };
 
   return (
     <div className="rounded-lg border border-border bg-card flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-border">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <h2 className="text-sm font-bold text-foreground">Place Order</h2>
+        {orchestratorAddr ? (
+          <span className="flex items-center gap-1 text-xs text-primary">
+            <Wifi className="w-3 h-3" /> Connected
+          </span>
+        ) : loadingOrchestrator ? (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 className="w-3 h-3 animate-spin" /> Loading...
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-xs text-destructive">
+            <WifiOff className="w-3 h-3" /> Offline
+          </span>
+        )}
       </div>
 
-      {/* Step indicator — visible during submission */}
+      {/* Step indicator */}
       {submitting && (
         <div className="px-4 py-2 bg-primary/5 border-b border-border">
-          <div className="flex items-center gap-1 flex-wrap">
-            {stepItems.map((s, i) => {
-              const isDone =
-                (s.id === 'approving' && (step === 'submitting' || step === 'polling')) ||
-                (s.id === 'submitting' && step === 'polling');
-              const isActive = s.id === step;
-              return (
-                <React.Fragment key={s.id}>
-                  <div
-                    className={`flex items-center gap-1 text-xs font-medium ${
-                      isDone
-                        ? 'text-primary'
-                        : isActive
-                        ? 'text-foreground'
-                        : 'text-muted-foreground'
-                    }`}
-                  >
-                    {isDone ? (
-                      <CheckCircle2 className="w-3 h-3 text-primary" />
-                    ) : isActive ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <span className="w-3 h-3 rounded-full border border-muted-foreground/40 inline-block" />
-                    )}
-                    {s.label}
-                  </div>
-                  {i < stepItems.length - 1 && (
-                    <span className="text-muted-foreground/40 text-xs">→</span>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </div>
+          <p className="text-xs text-foreground font-semibold">{stepLabel[step]}</p>
         </div>
       )}
 
@@ -212,7 +271,8 @@ export function OrderPlacementForm({
                 key={s}
                 type="button"
                 onClick={() => setSide(s)}
-                className={`py-2.5 rounded-lg font-bold text-sm capitalize transition-all ${
+                disabled={submitting}
+                className={`py-2.5 rounded-lg font-bold text-sm capitalize transition-all disabled:opacity-50 ${
                   side === s
                     ? s === 'buy'
                       ? 'bg-primary text-primary-foreground'
@@ -226,13 +286,12 @@ export function OrderPlacementForm({
           </div>
         </div>
 
-        {/* Limit Price — private */}
+        {/* Limit Price */}
         <div>
           <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
             <span className="flex items-center gap-1">
               Limit Price ({pair.quoteToken.symbol}/{pair.baseToken.symbol})
               <Lock className="w-3 h-3" />
-              <span className="font-normal normal-case text-muted-foreground/50">(encrypted)</span>
             </span>
           </label>
           <div className="relative">
@@ -248,20 +307,14 @@ export function OrderPlacementForm({
               className="w-full px-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
             />
           </div>
-          {price > 0 && (
-            <p className="text-xs text-muted-foreground/50 mt-1">
-              Public range: {tickLowerUsd.toFixed(2)} – {tickUpperUsd.toFixed(2)} {pair.quoteToken.symbol}
-            </p>
-          )}
         </div>
 
-        {/* Quantity — private */}
+        {/* Quantity */}
         <div>
           <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
             <span className="flex items-center gap-1">
               Quantity ({pair.baseToken.symbol})
               <Lock className="w-3 h-3" />
-              <span className="font-normal normal-case text-muted-foreground/50">(encrypted)</span>
             </span>
           </label>
           <input
@@ -276,35 +329,10 @@ export function OrderPlacementForm({
           />
         </div>
 
-        {/* Range Width — public */}
-        <div>
-          <label className="block text-xs font-semibold text-muted-foreground mb-1 uppercase tracking-wide">
-            Price Range Width{' '}
-            <span className="font-normal normal-case text-muted-foreground/50">(public)</span>
-          </label>
-          <p className="text-xs text-muted-foreground/50 mb-2">
-            Wider = more privacy. Others see your order in ±{(rw / 2).toFixed(2)} {pair.quoteToken.symbol} of your price.
-          </p>
-          <div className="flex items-center gap-3">
-            <input
-              type="range"
-              min="0.01"
-              max={((pair.maxTickRange * pair.tickSize) / 10000).toString()}
-              step="0.01"
-              value={rangeWidth}
-              onChange={(e) => setRangeWidth(e.target.value)}
-              className="flex-1 accent-primary"
-            />
-            <span className="text-xs font-mono font-bold text-primary w-20 text-right">
-              ±{(rw / 2).toFixed(2)}
-            </span>
-          </div>
-        </div>
-
         {/* Expiry */}
         <div>
           <label className="block text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
-            Expiry
+            Expiry (blocks)
           </label>
           <div className="grid grid-cols-4 gap-1">
             {EXPIRY_OPTIONS.map((opt) => (
@@ -312,7 +340,8 @@ export function OrderPlacementForm({
                 key={opt.value}
                 type="button"
                 onClick={() => setExpiresAt(opt.value)}
-                className={`py-1.5 text-xs rounded-lg border transition-colors ${
+                disabled={submitting}
+                className={`py-1.5 text-xs rounded-lg border transition-colors disabled:opacity-50 ${
                   expiresAt === opt.value
                     ? 'border-primary bg-primary/10 text-primary font-semibold'
                     : 'border-border bg-muted/30 text-muted-foreground hover:bg-muted/50'
@@ -341,19 +370,15 @@ export function OrderPlacementForm({
               >
                 {escrowDisplay} {escrowToken.symbol}
               </span>
-              <span className="text-muted-foreground">Public range</span>
-              <span className="font-mono text-right text-muted-foreground">
-                {tickLowerUsd.toFixed(2)}–{tickUpperUsd.toFixed(2)} {pair.quoteToken.symbol}
-              </span>
             </div>
           </div>
         )}
 
-        {/* 2-step notice */}
+        {/* Info notice */}
         {connected && !submitting && !success && (
           <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            Requires 2 wallet confirmations: approve escrow, then submit order.
+            {isBuy ? "For buy orders, you'll first approve the token spend, then submit the order." : "Your order will be submitted to the keeper. You'll receive a Receipt record as proof."}
           </p>
         )}
 
@@ -363,14 +388,23 @@ export function OrderPlacementForm({
           </div>
         )}
 
-        {success && (
+        {approvalTxId && !txId && (
+          <div className="p-3 rounded-lg bg-sky-500/10 border border-sky-500/30 flex gap-2 items-start">
+            <CheckCircle2 className="w-4 h-4 text-sky-500 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs text-sky-500 font-semibold">Token approved successfully!</p>
+               <p className="text-xs text-muted-foreground mt-1">Ready to submit your buy order.</p>
+              <p className="text-xs text-muted-foreground mt-1 font-mono break-all">{approvalTxId}</p>
+            </div>
+          </div>
+        )}
+
+        {success && txId && (
           <div className="p-3 rounded-lg bg-primary/10 border border-primary/30 flex gap-2 items-start">
             <CheckCircle2 className="w-4 h-4 text-primary mt-0.5 shrink-0" />
             <div>
               <p className="text-xs text-primary font-semibold">Order placed on-chain!</p>
-              {txId && (
-                <p className="text-xs text-muted-foreground mt-1 font-mono break-all">{txId}</p>
-              )}
+              <p className="text-xs text-muted-foreground mt-1 font-mono break-all">{txId}</p>
             </div>
           </div>
         )}
@@ -384,24 +418,17 @@ export function OrderPlacementForm({
             Connect Wallet to Trade
           </Button>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={showApprovalButton ? handleApprove : handleSubmit}>
             <Button
               type="submit"
-              disabled={submitting || !qty || !price}
+              disabled={!canSubmit || submitting || (isBuy && loadingBalances)}
               className={`w-full font-bold py-3 transition-all ${
                 isBuy
                   ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   : 'bg-destructive hover:bg-destructive/90 text-destructive-foreground'
               }`}
             >
-              {submitting ? (
-                <span className="flex items-center gap-2 justify-center">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {stepLabel[step]}
-                </span>
-              ) : (
-                `${isBuy ? 'Buy' : 'Sell'} ${pair.baseToken.symbol}`
-              )}
+              {getButtonText()}
             </Button>
           </form>
         )}

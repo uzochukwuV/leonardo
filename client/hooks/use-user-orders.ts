@@ -2,15 +2,23 @@
 
 /**
  * useUserOrders
- * Fetches user's OrderReceipt records from v5 contract.
+ * Fetches user's Receipt records from v17 contract.
  *
- * In v5:
- * - Orders are stored in PUBLIC mapping (accessible by keepers)
- * - Users receive OrderReceipt records as private proof of their orders
+ * In v17:
+ * - Orders are stored as Order records owned by the KEEPER (encrypted)
+ * - Users receive Receipt records as private proof of their orders
+ * - Users can use Receipt records to request cancellation
  *
- * OrderReceipt structure:
- *   owner: address, order_id: field, token_pair: u64,
- *   is_buy: bool, quantity: u128, limit_price: u64, timestamp: u32
+ * Receipt structure (v17):
+ *   owner: address,           // TRADER
+ *   order_id: field,
+ *   pair_id: u64,
+ *   is_buy: bool,
+ *   price: u64,
+ *   quantity: u128,
+ *   quote_token_id: field,
+ *   escrow_amount: u128,
+ *   created_at: u32,
  */
 
 import { useState, useCallback, useEffect } from 'react';
@@ -19,26 +27,26 @@ import { config } from '@/lib/config';
 
 // ─── Puzzle SDK (Puzzle wallet only) ─────────────────────────────────────────
 let _useRecords: typeof import('@puzzlehq/sdk').useRecords | null = null;
-let _RecordStatus: typeof import('@puzzlehq/sdk') | null = null;
 try {
   const puzzleSdk = require('@puzzlehq/sdk');
   _useRecords = puzzleSdk.useRecords;
-  _RecordStatus = puzzleSdk.RecordStatus;
 } catch {
   // Puzzle SDK not available
 }
 
-export interface OrderReceiptRecord {
+export interface ReceiptRecord {
   id: string;
   owner: string;
   plaintext?: string;
   data: {
     order_id: string;
-    token_pair: string;
+    pair_id: string;
     is_buy: string;
+    price: string;
     quantity: string;
-    limit_price: string;
-    timestamp: string;
+    quote_token_id: string;
+    escrow_amount: string;
+    created_at: string;
   };
   ciphertext?: string;
   recordCiphertext?: string;
@@ -47,26 +55,28 @@ export interface OrderReceiptRecord {
 
 export interface ParsedOrder {
   recordId: string;
-  rawRecord: OrderReceiptRecord;
+  rawRecord: ReceiptRecord;
+  /** The ciphertext needed for cancellation */
+  receiptCiphertext: string;
   orderId: string;          // The on-chain order_id (field)
   side: 'buy' | 'sell';
-  tokenPair: number;
-  limitPriceUsd: number;
+  pairId: number;
+  priceUsd: number;         // Price in USD (converted from basis points)
+  priceBps: number;         // Raw price in basis points
   quantityRaw: bigint;
-  timestamp: number;        // Unix milliseconds
-  // These fields come from public mapping query (optional)
+  quoteTokenId: string;
+  escrowAmount: bigint;
+  createdAt: number;        // Unix timestamp (seconds)
+  createdAtMs: number;      // Unix milliseconds for display
+  // Status from keeper API (optional, populated separately)
   filled?: bigint;
-  status?: 'active' | 'filled' | 'cancelled';
-  tickLower?: number;
-  tickUpper?: number;
-  tokenId?: string;
-  escrowedAmount?: bigint;
+  status?: 'active' | 'partially_filled' | 'filled' | 'pending_cancel' | 'cancelled';
 }
 
 // ─── Parsing helpers ──────────────────────────────────────────────────────────
 
 function stripUnit(v: string): string {
-  return v.replace(/u\d+|field/g, '').trim();
+  return v.replace(/u\d+|field/g, '').replace(/\.private|\.public/g, '').trim();
 }
 
 function parseU(v: string): number {
@@ -81,23 +91,30 @@ function parseBig(v: string): bigint {
   }
 }
 
-function parseRecord(r: OrderReceiptRecord): ParsedOrder | null {
+function parseRecord(r: ReceiptRecord): ParsedOrder | null {
   try {
     const d = r.data;
     if (!d?.order_id) return null;
 
     const isBuy = d.is_buy === 'true';
-    const limitPriceBps = parseU(d.limit_price);
+    const priceBps = parseU(d.price);
+    const createdAt = parseU(d.created_at);
 
     return {
       recordId: r.id,
       rawRecord: r,
+      receiptCiphertext: r.recordCiphertext || r.ciphertext || '',
       orderId: d.order_id,
       side: isBuy ? 'buy' : 'sell',
-      tokenPair: parseU(d.token_pair),
-      limitPriceUsd: limitPriceBps / 10000,
+      pairId: parseU(d.pair_id),
+      priceUsd: priceBps / 10000,
+      priceBps,
       quantityRaw: parseBig(d.quantity),
-      timestamp: parseU(d.timestamp) * 1000,
+      quoteTokenId: d.quote_token_id || '0field',
+      escrowAmount: parseBig(d.escrow_amount),
+      createdAt,
+      createdAtMs: createdAt * 1000,
+      status: 'active', // Default status; could be updated from keeper API
     };
   } catch {
     return null;
@@ -106,26 +123,28 @@ function parseRecord(r: OrderReceiptRecord): ParsedOrder | null {
 
 // ─── Plaintext → data fields parser ──────────────────────────────────────────
 
-function parsePlaintextToData(plaintext: string): OrderReceiptRecord['data'] {
+function parsePlaintextToData(plaintext: string): ReceiptRecord['data'] {
   const get = (key: string): string => {
     const match = plaintext.match(new RegExp(`${key}:\\s*([^,}]+)`));
     return match ? match[1].replace('.private', '').replace('.public', '').trim() : '0';
   };
 
   return {
-    order_id:    get('order_id'),
-    token_pair:  get('token_pair'),
-    is_buy:      get('is_buy'),
-    quantity:    get('quantity'),
-    limit_price: get('limit_price'),
-    timestamp:   get('timestamp'),
+    order_id: get('order_id'),
+    pair_id: get('pair_id'),
+    is_buy: get('is_buy'),
+    price: get('price'),
+    quantity: get('quantity'),
+    quote_token_id: get('quote_token_id'),
+    escrow_amount: get('escrow_amount'),
+    created_at: get('created_at'),
   };
 }
 
 // ─── Puzzle SDK path ──────────────────────────────────────────────────────────
 
 function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: string | null; refresh: () => void } | null {
-  if (!_useRecords || !_RecordStatus) return null;
+  if (!_useRecords) return null;
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { records, loading, error, fetchPage: refresh } = _useRecords({
@@ -138,17 +157,20 @@ function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: st
   const orders: ParsedOrder[] = (records ?? [])
     .map((r) => {
       const data = r.data as Record<string, string>;
-      const rec: OrderReceiptRecord = {
+      const rec: ReceiptRecord = {
         id: r.transactionId ?? r.transitionId,
         owner: r.owner ?? '',
         plaintext: r.plaintext,
+        recordCiphertext: r.ciphertext,
         data: {
-          order_id:    data.order_id ?? '0field',
-          token_pair:  data.token_pair ?? '0',
-          is_buy:      data.is_buy ?? 'false',
-          quantity:    data.quantity ?? '0',
-          limit_price: data.limit_price ?? '0',
-          timestamp:   data.timestamp ?? '0',
+          order_id: data.order_id ?? '0field',
+          pair_id: data.pair_id ?? '0',
+          is_buy: data.is_buy ?? 'false',
+          price: data.price ?? '0',
+          quantity: data.quantity ?? '0',
+          quote_token_id: data.quote_token_id ?? '0field',
+          escrow_amount: data.escrow_amount ?? '0',
+          created_at: data.created_at ?? '0',
         },
         spent: r.status !== null,
       };
@@ -163,7 +185,7 @@ function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: st
     .filter((r) => !r.spent)
     .map(parseRecord)
     .filter((o): o is ParsedOrder => o !== null)
-    .sort((a, b) => b.timestamp - a.timestamp);
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
 
   return { orders, loading, error: error ?? null, refresh };
 }
@@ -183,7 +205,7 @@ function useProvableOrders() {
     setError(null);
 
     try {
-      let records: OrderReceiptRecord[] = await requestRecords(
+      let records: ReceiptRecord[] = await requestRecords(
         config.CONTRACT_PROGRAM_ID,
         false // unspent only
       );
@@ -194,34 +216,43 @@ function useProvableOrders() {
         records = await requestRecords(config.CONTRACT_PROGRAM_ID, false);
       }
 
-      // Decrypt any ciphertext records
+      // Decrypt any ciphertext records and parse
       const processed = await Promise.all(
         records.map(async (r) => {
           if (r.spent) return null;
-          if (r.data?.order_id) return r;
 
-          const cipher = r.recordCiphertext ?? r.ciphertext;
-          if (cipher && decrypt) {
+          // Store the ciphertext for cancellation
+          const ciphertext = r.recordCiphertext ?? r.ciphertext;
+
+          // If already has data fields, use them
+          if (r.data?.order_id && r.data.order_id !== '0field') {
+            r.recordCiphertext = ciphertext;
+            return r;
+          }
+
+          // Try to decrypt if we have ciphertext
+          if (ciphertext && decrypt) {
             try {
-              const plaintext = await decrypt(cipher);
+              const plaintext = await decrypt(ciphertext);
               if (plaintext) {
                 r.plaintext = plaintext;
                 r.data = parsePlaintextToData(plaintext);
+                r.recordCiphertext = ciphertext;
               }
             } catch {
               // decrypt failed — skip
             }
           }
 
-          return r.data?.order_id ? r : null;
+          return r.data?.order_id && r.data.order_id !== '0field' ? r : null;
         })
       );
 
       const parsed = processed
-        .filter((r): r is OrderReceiptRecord => r !== null)
+        .filter((r): r is ReceiptRecord => r !== null)
         .map(parseRecord)
         .filter((o): o is ParsedOrder => o !== null)
-        .sort((a, b) => b.timestamp - a.timestamp);
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
 
       setOrders(parsed);
     } catch (err) {

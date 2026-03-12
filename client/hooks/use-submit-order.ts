@@ -2,77 +2,95 @@
 
 /**
  * useSubmitOrder
- * Order submission for v5 contract with tri-token support:
+ * Order submission for private_orderbook_v17.aleo
  *
- * For native ALEO credits (tokenId = 0field):
- *   - submit_order_credits (no approval needed)
+ * Functions:
+ *   submit_buy_order(pair_id, quote_token_id, price, quantity, escrow_quote, timestamp, expires_at, orchestrator_addr)
+ *   submit_sell_order(pair_id, quote_token_id, price, quantity, escrow_aleo, timestamp, expires_at, orchestrator_addr)
  *
- * For Circle USDC (tokenId = 1field):
- *   - submit_order_usdc (uses test_usdc_token.aleo - requires approval)
- *
- * For ARC-21 tokens:
- *   1. token_registry.aleo/approve_public — grants escrow pull to program
- *   2. submit_order — submits the order with token transfer
- *
- * Contract signatures (main.leo):
- *   submit_order(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity, token_id)
- *   submit_order_credits(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity)
- *   submit_order_usdc(token_pair, is_buy, tick_lower, tick_upper, timestamp, expires_at, limit_price, quantity)
+ * Returns: (Order, Receipt, Future)
+ *   - Order record: owned by orchestrator
+ *   - Receipt record: owned by trader (proof of order)
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useContract } from './use-contract';
 import { config } from '@/lib/config';
 import {
   getTokenPair,
   priceToBasisPoints,
-  priceToTick,
   calculateEscrowAmount,
 } from '@/lib/token-pairs';
+import { getOrchestratorAddress } from '@/lib/aleo-service';
 
-export type SubmitStep = 'idle' | 'approving' | 'submitting' | 'polling' | 'done';
+export type SubmitStep = 'idle' | 'approving' | 'polling-approval' | 'submitting' | 'polling-order' | 'done';
 
 export interface SubmitOrderParams {
   pairId: number;
   isBuy: boolean;
-  /** Tick lower bound as USD price */
-  tickLowerUsd: number;
-  /** Tick upper bound as USD price */
-  tickUpperUsd: number;
-  /** Exact limit price in USD (private input) */
+  /** Limit price in USD */
   limitPriceUsd: number;
-  /** Quantity in human units e.g. 100.5 ALEO (private input) */
+  /** Quantity in human units (e.g. 100.5 ALEO) */
   quantity: number;
   /** Block height expiry — 0 means no expiry */
-  expiresAt?: number;
+  expiresAt: number;
+  /** Tick range for privacy (not used in v17 but kept for UI compatibility) */
+  tickLowerUsd?: number;
+  tickUpperUsd?: number;
 }
 
 export function useSubmitOrder() {
   const { connected, address, execTx, pollTx } = useContract();
   const [step, setStep] = useState<SubmitStep>('idle');
   const [txId, setTxId] = useState<string | null>(null);
+  const [approvalTxId, setApprovalTxId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<any>(null);
+  const [orchestratorAddr, setOrchestratorAddr] = useState<string | null>(null);
+  const [loadingOrchestrator, setLoadingOrchestrator] = useState(true);
+
+  // Fetch orchestrator address on mount
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchOrchestrator() {
+      try {
+        const addr = await getOrchestratorAddress();
+        if (mounted && addr) {
+          setOrchestratorAddr(addr);
+        }
+      } catch (err) {
+        console.error('Failed to fetch orchestrator:', err);
+      } finally {
+        if (mounted) {
+          setLoadingOrchestrator(false);
+        }
+      }
+    }
+
+    fetchOrchestrator();
+    return () => { mounted = false; };
+  }, []);
 
   const reset = useCallback(() => {
     setStep('idle');
     setTxId(null);
+    setApprovalTxId(null);
     setError(null);
+    setReceipt(null);
   }, []);
 
-  const submitOrder = useCallback(
+  const approveQuoteTokens = useCallback(
     async (params: SubmitOrderParams): Promise<string | null> => {
-      const {
-        pairId,
-        isBuy,
-        tickLowerUsd,
-        tickUpperUsd,
-        limitPriceUsd,
-        quantity,
-        expiresAt = 0,
-      } = params;
+      const { pairId, isBuy, limitPriceUsd, quantity } = params;
+
+      if (!isBuy) {
+        // Approval is only for buy orders
+        return null;
+      }
 
       setError(null);
-      setTxId(null);
+      setApprovalTxId(null);
 
       if (!connected || !address) {
         setError('Connect your wallet first');
@@ -86,123 +104,124 @@ export function useSubmitOrder() {
       }
 
       try {
-        const tickLowerId = priceToTick(tickLowerUsd, pair.tickSize);
-        const tickUpperId = priceToTick(tickUpperUsd, pair.tickSize);
-        const limitPriceBps = priceToBasisPoints(limitPriceUsd);
+        const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
         const quantityRaw = BigInt(
           Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
         );
-        const escrowToken = isBuy ? pair.quoteToken : pair.baseToken;
-        const escrowAmt = calculateEscrowAmount(isBuy, quantityRaw, BigInt(limitPriceBps));
-        const timestamp = Math.floor(Date.now() / 1000);
+        const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
 
-        // Check token type for routing
-        const isNative = escrowToken.isNative || escrowToken.tokenId === config.NATIVE_CREDITS_ID;
-        const isCircleUsdc = escrowToken.isCircleUsdc || escrowToken.tokenId === config.CIRCLE_USDC_ID;
+        setStep('approving');
+        const txId = await execTx({
+          program: config.TOKEN_REGISTRY_PROGRAM,
+          function: 'approve_public',
+          inputs: [
+            pair.quoteToken.tokenId,
+            config.PROGRAM_ADDRESS,
+            `${escrowAmount}u128`,
+          ],
+          fee: config.DEFAULT_FEE,
+          privateFee: false,
+        });
+
+        setStep('polling-approval');
+        const approvalResult = await pollTx(txId);
+        if (approvalResult.status === 'rejected') {
+          throw new Error('Approval transaction rejected');
+        }
+
+        const confirmedId = approvalResult.onChainId;
+        setApprovalTxId(confirmedId);
+        setStep('idle'); // Ready for the next step
+        return confirmedId;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to approve tokens');
+        setStep('idle');
+        return null;
+      }
+    },
+    [connected, address, execTx, pollTx]
+  );
+
+  const submitOrder = useCallback(
+    async (params: SubmitOrderParams): Promise<string | null> => {
+      const {
+        pairId,
+        isBuy,
+        limitPriceUsd,
+        quantity,
+        expiresAt = 0,
+      } = params;
+
+      setError(null);
+      setTxId(null);
+
+      if (!connected || !address) {
+        setError('Connect your wallet first');
+        return null;
+      }
+
+      if (!orchestratorAddr) {
+        setError('Orchestrator address not loaded. Please try again.');
+        return null;
+      }
+
+      const pair = getTokenPair(pairId);
+      if (!pair) {
+        setError('Invalid token pair');
+        return null;
+      }
+
+      try {
+        const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
+        const quantityRaw = BigInt(
+          Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
+        );
 
         let orderTxId: string;
+        const timestamp = Math.floor(Date.now() / 1000);
 
-        if (isNative) {
-          // ── Native ALEO credits: direct submission (no approval) ────────
-          setStep('submitting');
+        setStep('submitting');
+        if (isBuy) {
+          // BUY ORDER: escrow quote tokens (via token_registry.aleo)
+          const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
           orderTxId = await execTx({
             program: config.CONTRACT_PROGRAM_ID,
-            function: 'submit_order_credits',
+            function: 'submit_buy_order',
             inputs: [
-              `${pairId}u64`,             // public  token_pair
-              `${isBuy}`,                 // public  is_buy
-              `${tickLowerId}u64`,        // public  tick_lower
-              `${tickUpperId}u64`,        // public  tick_upper
-              `${timestamp}u32`,          // public  timestamp
-              `${expiresAt}u32`,          // public  expires_at
-              `${limitPriceBps}u64`,      // public  limit_price
-              `${quantityRaw}u128`,       // public  quantity
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-        } else if (isCircleUsdc) {
-          // ── Circle USDC: approve + submit_order_usdc ────────────────────
-          // Step 1: approve_public on test_usdc_token.aleo
-          setStep('approving');
-          const approveTxId = await execTx({
-            program: 'test_usdc_token.aleo',
-            function: 'approve_public',
-            inputs: [
-              config.PROGRAM_ADDRESS,     // spender: the program's aleo address
-              `${escrowAmt}u128`,         // amount: u128
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-
-          const approveResult = await pollTx(approveTxId);
-          if (approveResult.status === 'rejected') {
-            throw new Error('Circle USDC approve rejected on-chain');
-          }
-
-          // Step 2: submit_order_usdc
-          setStep('submitting');
-          orderTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'submit_order_usdc',
-            inputs: [
-              `${pairId}u64`,             // public  token_pair
-              `${isBuy}`,                 // public  is_buy
-              `${tickLowerId}u64`,        // public  tick_lower
-              `${tickUpperId}u64`,        // public  tick_upper
-              `${timestamp}u32`,          // public  timestamp
-              `${expiresAt}u32`,          // public  expires_at
-              `${limitPriceBps}u64`,      // public  limit_price
-              `${quantityRaw}u128`,       // public  quantity
+              `${pairId}u64`,
+              pair.quoteToken.tokenId,
+              `${priceBps}u64`,
+              `${quantityRaw}u128`,
+              `${escrowAmount}u128`,
+              `${timestamp}u32`,
+              `${expiresAt}u32`,
+              orchestratorAddr,
             ],
             fee: config.DEFAULT_FEE,
             privateFee: false,
           });
         } else {
-          // ── ARC-21 tokens: approve + submit ──────────────────────────────
-          // Step 1: approve_public
-          setStep('approving');
-          const approveTxId = await execTx({
-            program: 'token_registry.aleo',
-            function: 'approve_public',
-            inputs: [
-              escrowToken.tokenId,        // token_id: field
-              config.PROGRAM_ADDRESS,     // spender: the program's aleo address
-              `${escrowAmt}u128`,         // amount: u128
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
-
-          const approveResult = await pollTx(approveTxId);
-          if (approveResult.status === 'rejected') {
-            throw new Error('Approve transaction rejected on-chain');
-          }
-
-          // Step 2: submit_order
-          setStep('submitting');
+          // SELL ORDER: escrow ALEO (via credits.aleo)
+          const escrowAmount = quantityRaw;
           orderTxId = await execTx({
             program: config.CONTRACT_PROGRAM_ID,
-            function: 'submit_order',
+            function: 'submit_sell_order',
             inputs: [
-              `${pairId}u64`,             // public  token_pair
-              `${isBuy}`,                 // public  is_buy
-              `${tickLowerId}u64`,        // public  tick_lower
-              `${tickUpperId}u64`,        // public  tick_upper
-              `${timestamp}u32`,          // public  timestamp
-              `${expiresAt}u32`,          // public  expires_at
-              `${limitPriceBps}u64`,      // public  limit_price
-              `${quantityRaw}u128`,       // public  quantity
-              escrowToken.tokenId,        // public  token_id
+              `${pairId}u64`,
+              pair.quoteToken.tokenId,
+              `${priceBps}u64`,
+              `${quantityRaw}u128`,
+              `${Number(escrowAmount)}u64`,
+              `${timestamp}u32`,
+              `${expiresAt}u32`,
+              orchestratorAddr,
             ],
             fee: config.DEFAULT_FEE,
             privateFee: false,
           });
         }
 
-        // ── Poll for confirmation ──────────────────────────────────────────
-        setStep('polling');
+        setStep('polling-order');
         const orderResult = await pollTx(orderTxId);
         if (orderResult.status === 'rejected') {
           throw new Error('Order transaction rejected on-chain');
@@ -218,16 +237,29 @@ export function useSubmitOrder() {
         return null;
       }
     },
-    [connected, address, execTx, pollTx]
+    [connected, address, execTx, pollTx, orchestratorAddr]
   );
 
   const stepLabel: Record<SubmitStep, string> = {
     idle: '',
-    approving: 'Approving escrow in wallet...',
+    approving: 'Approving token spend...',
+    'polling-approval': 'Waiting for approval confirmation...',
     submitting: 'Submitting order to chain...',
-    polling: 'Waiting for confirmation...',
-    done: 'Order confirmed!',
+    'polling-order': 'Waiting for order confirmation...',
+    done: 'Transaction complete!',
   };
 
-  return { submitOrder, step, stepLabel, txId, error, reset };
+  return {
+    approveQuoteTokens,
+    submitOrder,
+    step,
+    stepLabel,
+    txId,
+    approvalTxId,
+    error,
+    reset,
+    receipt,
+    orchestratorAddr,
+    loadingOrchestrator,
+  };
 }
