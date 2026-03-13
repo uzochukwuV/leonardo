@@ -14,7 +14,10 @@ import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { config } from '@/lib/config';
 import { TOKENS, type TokenInfo } from '@/lib/token-pairs';
 import { getRecordsForViewKey } from '@/lib/aleo-record-scanner';
-import { Account } from '@provablehq/sdk';
+import { Account, RecordScanner } from '@provablehq/sdk';
+
+
+
 
 export interface TokenBalance {
   token: TokenInfo;

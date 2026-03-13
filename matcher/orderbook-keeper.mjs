@@ -14,9 +14,30 @@
  *   - Keeper processes cancellations and creates CancellationProof records
  *
  * Bot Functions:
- *   1. Scans chain for Order records owned by keeper
+ *   1. Scans chain for Order records owned by keeper (enhanced with RSS)
  *   2. Scans chain for CancellationRequest records (owned by keeper)
- *   3. Maintains in-memory orderbook (buy/sell queues)\n *   4. Matches crossing orders (buy.price >= sell.price)\n *   5. Executes settle_match to complete trades (handles partial fills)\n *   6. Processes cancellation requests and executes cancel functions\n *\n * API endpoints:\n *   GET /api/orders           - All known orders (buy/sell)\n *   GET /api/orderbook        - Formatted order book (bids/asks)\n *   GET /api/trades           - Recent trades\n *   GET /health               - Bot status\n *   POST /api/match           - Manually trigger matching\n *\n * Environment variables:\n *   PRIVATE_KEY            - Orchestrator/keeper private key\n *   API_PORT               - HTTP port (default: 3002)\n *   FRONTEND_ORIGIN        - CORS origin (default: *)\n */
+ *   3. Maintains in-memory orderbook (buy/sell queues)
+ *   4. Matches crossing orders using advanced algorithms (buy.price >= sell.price)
+ *   5. Executes settle_match to complete trades (handles partial fills)
+ *   6. Processes cancellation requests and executes cancel functions
+ *
+ * API endpoints:
+ *   GET /api/orders           - All known orders (buy/sell)
+ *   GET /api/orderbook        - Formatted order book (bids/asks)
+ *   GET /api/trades           - Recent trades
+ *   GET /health               - Bot status (includes RSS status)
+ *   POST /api/match           - Manually trigger matching
+ *   GET /api/rss/status       - Record Scanner Service status
+ *   POST /api/rss/find-matches - Find best matches via RSS
+ *
+ * Environment variables:
+ *   PRIVATE_KEY            - Orchestrator/keeper private key
+ *   VIEW_KEY               - View key for Record Scanner Service
+ *   USE_RECORD_SCANNER     - Enable RSS (true/false)
+ *   RSS_API_KEY            - RSS API key
+ *   RSS_CONSUMER_ID        - RSS consumer ID
+ *   API_PORT               - HTTP port (default: 3002)
+ *   FRONTEND_ORIGIN        - CORS origin (default: *)\n */
 
 import 'dotenv/config';
 import { execSync } from 'child_process';
@@ -28,6 +49,7 @@ import {
   getLatestBlockHeight,
   getMapping,
 } from './chain-scanner.mjs';
+import { RecordScannerService } from './record-scanner.mjs';
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -38,6 +60,7 @@ const SNARKOS = process.env.SNARKOS_PATH || 'snarkos';
 const CONFIG = {
   // Keys
   privateKey: process.env.PRIVATE_KEY || '',
+  viewKey: process.env.VIEW_KEY || '',
 
   // Program
   programId: process.env.ORDERBOOK_PROGRAM || 'private_orderbook_v17.aleo',
@@ -47,6 +70,12 @@ const CONFIG = {
   // Endpoints
   queryEndpoint: process.env.QUERY_ENDPOINT || 'https://api.explorer.provable.com/v1',
   broadcastEndpoint: process.env.BROADCAST_ENDPOINT || 'https://api.explorer.provable.com/v1/testnet/transaction/broadcast',
+
+  // Record Scanner Service
+  rssApiKey: process.env.RSS_API_KEY || '',
+  rssConsumerId: process.env.RSS_CONSUMER_ID || '',
+  useRecordScanner: process.env.USE_RECORD_SCANNER === 'true',
+  scannerStartBlock: parseInt(process.env.SCANNER_START_BLOCK || '0'),
 
   // Intervals
   scanIntervalMs: parseInt(process.env.SCAN_INTERVAL || '30000'),
@@ -81,6 +110,10 @@ let lastMatchAt = null;
 let botStartedAt = new Date().toISOString();
 let botPaused = false;
 let isProcessing = false;
+
+// Record Scanner Service instance
+let recordScanner = null;
+const RecordScanner = RecordScannerService;
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -172,10 +205,43 @@ function parseCancellationRequestFromPlaintext(plaintext) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SCANNER
+// SCANNER (Enhanced with Record Scanner Service)
 // ═══════════════════════════════════════════════════════════════
 
 async function scanOrders() {
+  // Use Record Scanner Service if available and configured
+  if (CONFIG.useRecordScanner && recordScanner) {
+    log('SCAN', 'Fetching Order records via Record Scanner Service...');
+    try {
+      const records = await recordScanner.scanOrderRecords(CONFIG.programId);
+      log('SCAN', `Found ${records.length} Order record(s) via RSS`);
+
+      const orders = [];
+      for (const record of records) {
+        // If plaintext is available, parse it
+        if (record.plaintext) {
+          const order = parseOrderFromPlaintext(record.plaintext);
+          console.log('Parsed order from RSS plaintext:', order);
+          if (order) {
+            order.recordCiphertext = record.recordCiphertext;
+            order.commitment = record.commitment;
+            order.blockHeight = record.blockHeight;
+            order.transactionId = record.transactionId;
+            orders.push(order);
+          }
+        }
+      }
+
+      log('SCAN', `Parsed ${orders.length} valid order(s) via RSS`);
+      return orders;
+    } catch (err) {
+      logError('SCAN', `RSS scan failed: ${err.message}`);
+      log('SCAN', 'Falling back to chain scanner...');
+      // Fall through to legacy scanning
+    }
+  }
+
+  // Legacy chain scanning fallback
   log('SCAN', 'Fetching Order records from chain...');
   try {
     const records = await scanOrderRecords(CONFIG.programId, 200);
@@ -186,6 +252,7 @@ async function scanOrders() {
       // If plaintext is available, parse it
       if (record.plaintext) {
         const order = parseOrderFromPlaintext(record.plaintext);
+        console.log('Parsed order from chain plaintext:', order);
         if (order) {
           order.recordCiphertext = record.recordCiphertext;
           order.commitment = record.commitment;
@@ -205,6 +272,38 @@ async function scanOrders() {
 }
 
 async function scanCancellationRequests() {
+  // Use Record Scanner Service if available and configured
+  if (CONFIG.useRecordScanner && recordScanner) {
+    log('SCAN', 'Checking for cancellation requests via RSS...');
+    try {
+      const records = await recordScanner.scanCancellationRequestRecords(CONFIG.programId);
+      log('SCAN', `Found ${records.length} CancellationRequest record(s) via RSS`);
+
+      const requests = [];
+      for (const record of records) {
+        // If plaintext is available, parse it
+        if (record.plaintext) {
+          const req = parseCancellationRequestFromPlaintext(record.plaintext);
+          if (req) {
+            req.recordCiphertext = record.recordCiphertext;
+            req.commitment = record.commitment;
+            req.blockHeight = record.blockHeight;
+            req.transactionId = record.transactionId;
+            requests.push(req);
+          }
+        }
+      }
+
+      log('SCAN', `Parsed ${requests.length} valid cancellation request(s) via RSS`);
+      return requests;
+    } catch (err) {
+      logError('SCAN', `RSS cancellation scan failed: ${err.message}`);
+      log('SCAN', 'Falling back to chain scanner...');
+      // Fall through to legacy scanning
+    }
+  }
+
+  // Legacy chain scanning fallback
   log('SCAN', 'Checking for cancellation requests...');
   try {
     const records = await scanCancellationRequestRecords(CONFIG.programId, 200);
@@ -305,6 +404,36 @@ function findMatchingOrders() {
   }
 
   return matches;
+}
+
+/**
+ * Enhanced matching using Record Scanner Service for comprehensive order discovery
+ */
+async function findBestMatchesViaRSS() {
+  if (!CONFIG.useRecordScanner || !recordScanner) {
+    return findMatchingOrders(); // Fall back to legacy matching
+  }
+
+  try {
+    log('MATCH', '🔍 Using RSS to find best matches...');
+    const matches = await recordScanner.findBestMatches(CONFIG.programId, 5); // Limit to 5 best matches
+    
+    if (matches.length > 0) {
+      log('MATCH', `✨ RSS found ${matches.length} optimal match(es)`);
+      for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        log('MATCH', `  ${i+1}. Buy ${match.buyOrder.orderId.slice(0,20)}... @ ${match.buyOrder.price} ↔ Sell ${match.sellOrder.orderId.slice(0,20)}... @ ${match.sellOrder.price} (score: ${match.score.toFixed(2)})`);
+      }
+    } else {
+      log('MATCH', 'RSS found no matching orders');
+    }
+    
+    return matches;
+  } catch (err) {
+    logError('MATCH', `RSS matching failed: ${err.message}`);
+    log('MATCH', 'Falling back to legacy matching...');
+    return findMatchingOrders();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -504,6 +633,7 @@ function startApiServer() {
 
     // GET /health
     if (url.pathname === '/health' && req.method === 'GET') {
+      const rssStatus = recordScanner ? recordScanner.getStatus() : null;
       return json({
         status: 'ok',
         paused: botPaused,
@@ -515,6 +645,11 @@ function startApiServer() {
         lastScanAt,
         lastMatchAt,
         upSince: botStartedAt,
+        recordScanner: {
+          enabled: CONFIG.useRecordScanner,
+          initialized: !!recordScanner,
+          status: rssStatus
+        }
       });
     }
 
@@ -581,6 +716,47 @@ function startApiServer() {
       return json({ paused: false });
     }
 
+    // GET /api/rss/status - Record Scanner Service status
+    if (url.pathname === '/api/rss/status' && req.method === 'GET') {
+      if (!CONFIG.useRecordScanner) {
+        return json({ enabled: false, message: 'Record Scanner Service is disabled' });
+      }
+      
+      if (!recordScanner) {
+        return json({ enabled: true, initialized: false, message: 'Record Scanner Service not initialized' });
+      }
+
+      const status = recordScanner.getStatus();
+      return json({
+        enabled: true,
+        initialized: true,
+        ...status
+      });
+    }
+
+    // POST /api/rss/find-matches - Trigger RSS best match finding
+    if (url.pathname === '/api/rss/find-matches' && req.method === 'POST') {
+      if (!recordScanner) {
+        return json({ error: 'Record Scanner Service not available' }, 400);
+      }
+
+      try {
+        const matches = await recordScanner.findBestMatches(CONFIG.programId, 10);
+        return json({
+          matchCount: matches.length,
+          matches: matches.map(match => ({
+            buyOrderId: match.buyOrder.orderId,
+            sellOrderId: match.sellOrder.orderId,
+            fillQuantity: match.fillQuantity.toString(),
+            fillPrice: match.fillPrice.toString(),
+            score: match.score
+          }))
+        });
+      } catch (err) {
+        return json({ error: err.message }, 500);
+      }
+    }
+
     res.writeHead(404);
     res.end();
   });
@@ -591,6 +767,10 @@ function startApiServer() {
     log('API', `   GET http://localhost:${CONFIG.apiPort}/api/orders`);
     log('API', `   GET http://localhost:${CONFIG.apiPort}/api/trades`);
     log('API', `   GET http://localhost:${CONFIG.apiPort}/health`);
+    if (CONFIG.useRecordScanner) {
+      log('API', `   GET http://localhost:${CONFIG.apiPort}/api/rss/status`);
+      log('API', `   POST http://localhost:${CONFIG.apiPort}/api/rss/find-matches`);
+    }
   });
 
   server.on('error', err => logError('API', `Server error: ${err.message}`));
@@ -632,8 +812,8 @@ async function matchTick() {
   let matchedCount = 0;
 
   try {
-    // Process matches
-    const matches = findMatchingOrders();
+    // Process matches using enhanced RSS matching or fallback to legacy
+    const matches = await findBestMatchesViaRSS();
 
     if (matches.length === 0) {
       log('MATCH', 'No crossing orders found');
@@ -679,6 +859,7 @@ async function main() {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║        Private Orderbook Keeper Bot v1 (v17)               ║');
+  console.log('║             Enhanced with Record Scanner Service            ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log('');
   log('BOT', `Program: ${CONFIG.programId}`);
@@ -686,11 +867,36 @@ async function main() {
   log('BOT', `Scan interval:  ${CONFIG.scanIntervalMs / 1000}s`);
   log('BOT', `Match interval: ${CONFIG.matchIntervalMs / 1000}s`);
   log('BOT', `API port: ${CONFIG.apiPort}`);
+  log('BOT', `Record Scanner: ${CONFIG.useRecordScanner ? 'ENABLED' : 'DISABLED'}`);
   console.log('');
 
   if (!CONFIG.privateKey || CONFIG.privateKey.includes('...')) {
     logError('BOT', 'Missing PRIVATE_KEY in .env');
     process.exit(1);
+  }
+
+  // Initialize Record Scanner Service if enabled
+  if (CONFIG.useRecordScanner) {
+    if (!CONFIG.rssApiKey || !CONFIG.viewKey) {
+      logError('BOT', 'Record Scanner enabled but missing RSS_API_KEY or VIEW_KEY in .env');
+      log('BOT', 'Continuing with legacy chain scanning only...');
+    } else {
+      try {
+        log('BOT', 'Initializing Record Scanner Service...');
+        recordScanner = new RecordScannerService(CONFIG.rssApiKey, CONFIG.rssConsumerId || '', CONFIG.network, CONFIG.viewKey);
+        
+        log('BOT', `Registering view key with RSS (start block: ${CONFIG.scannerStartBlock})...`);
+        await recordScanner.registerViewKey(CONFIG.viewKey, CONFIG.scannerStartBlock);
+        
+        log('BOT', '✅ Record Scanner Service initialized successfully');
+        const status = recordScanner.getStatus();
+        log('BOT', `RSS UUID: ${status.uuid}`);
+      } catch (err) {
+        logError('BOT', `RSS initialization failed: ${err.message}`);
+        log('BOT', 'Continuing with legacy chain scanning only...');
+        recordScanner = null;
+      }
+    }
   }
 
   // Start HTTP API server

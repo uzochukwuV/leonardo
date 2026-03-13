@@ -110,16 +110,6 @@ echo ""
 
 # ─── STEP 1: INITIALIZE ─────────────────────────────────────
 if [ "$SKIP_INIT" = false ]; then
-    step "STEP 1 — Initialize program"
-    info "Admin: $ADDRESS"
-    info "Treasury: $TREASURY_ADDRESS"
-
-    own_tx initialize "$ADDRESS" "$TREASURY_ADDRESS"
-    ok "Program initialized"
-    sleep 30
-
-    step "STEP 1b — Add keeper"
-    info "Keeper: $KEEPER_ADDRESS"
 
     own_tx add_keeper "$KEEPER_ADDRESS"
     ok "Keeper added"

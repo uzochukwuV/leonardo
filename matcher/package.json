@@ -6,12 +6,18 @@
   "main": "orderbook-keeper.mjs",
   "scripts": {
     "start": "node orderbook-keeper.mjs",
-    "dev": "node orderbook-keeper.mjs"
+    "dev": "node orderbook-keeper.mjs",
+    "extract-viewkey": "node extract-viewkey.mjs",
+    "test-rss": "node TEST_RSS_SCENARIO.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+      "@provablehq/sdk": "^0.9.15"
+  },
+  "optionalDependencies": {
+      "@provablehq/sdk": "^0.9.15"
   }
 }

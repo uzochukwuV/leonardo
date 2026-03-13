@@ -3,7 +3,9 @@
     "allow": [
       "Bash(leo build:*)",
       "Bash(leo test:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "WebFetch(domain:docs.explorer.provable.com)",
+      "WebFetch(domain:developer.aleo.org)"
     ]
   }
 }
