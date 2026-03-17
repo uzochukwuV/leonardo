@@ -5,7 +5,8 @@
       "Bash(leo test:*)",
       "Bash(mkdir:*)",
       "WebFetch(domain:docs.explorer.provable.com)",
-      "WebFetch(domain:developer.aleo.org)"
+      "WebFetch(domain:developer.aleo.org)",
+      "WebFetch(domain:aleo-dev-toolkit-react-app.vercel.app)"
     ]
   }
 }

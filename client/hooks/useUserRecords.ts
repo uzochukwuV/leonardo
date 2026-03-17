@@ -19,7 +19,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { config } from '@/lib/config';
-import { getRecordsForViewKey } from '@/lib/aleo-record-scanner';
 
 // Define interfaces for the records based on the smart contract
 // These might need adjustments if the record-scanner returns data in a different format
@@ -92,7 +91,7 @@ export function useUserRecords() {
       }
 
       // Fetch all records for the contract
-      const allRecords = await getRecordsForViewKey(viewKey, config.CONTRACT_PROGRAM_ID);
+      const allRecords = await wallet.adapter.requestRecords(config.CONTRACT_PROGRAM_ID, false);
 
       const newReceipts: ReceiptRecord[] = [];
       const newSettlements: SettlementProofRecord[] = [];

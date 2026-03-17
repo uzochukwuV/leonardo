@@ -13,8 +13,8 @@ import { useState, useCallback, useEffect } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { config } from '@/lib/config';
 import { TOKENS, type TokenInfo } from '@/lib/token-pairs';
-import { getRecordsForViewKey } from '@/lib/aleo-record-scanner';
-import { Account, RecordScanner } from '@provablehq/sdk';
+
+
 
 
 
@@ -89,7 +89,7 @@ export function useTokenBalances() {
       }
 
       // Fetch all unspent records for the user
-      const allRecords = await getRecordsForViewKey(viewKey);
+      const allRecords = await wallet.adapter.requestRecords("", false);
 
       const newBalances: Record<string, TokenBalance> = {};
       const tokensToFetch = [TOKENS.ALEO, TOKENS.USDC, TOKENS.TOKEN_A, TOKENS.TOKEN_B];
@@ -131,28 +131,7 @@ export function useTokenBalances() {
         }
       }
 
-      // Fetch allowances (still requires mapping queries)
-      for (const token of tokensToFetch) {
-        if (!token.isNative && token.tokenId) {
-          try {
-            const raw = await fetchMappingValue(
-              config.TOKEN_REGISTRY_PROGRAM,
-              'authorized_balances',
-              `{ token_id: ${token.tokenId}, account: ${address} }`
-            );
-            if (raw) {
-              // This is a simplification. The mapping likely holds spender->amount.
-              // We'll assume for now it's just one allowance to our contract.
-              const allowanceAmount = parseU128(raw);
-              if (newBalances[token.symbol]) {
-                newBalances[token.symbol].allowances[config.PROGRAM_ADDRESS] = allowanceAmount;
-              }
-            }
-          } catch (err) {
-             console.error(`Failed to fetch allowance for ${token.symbol}:`, err);
-          }
-        }
-      }
+      
 
 
       // Finalize formatting

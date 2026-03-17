@@ -2,67 +2,81 @@
 
 import { useState } from 'react';
 import { Header } from '@/components/header';
-import { OrderBookDisplay } from '@/components/order-book-display';
 import { OrderPlacementForm } from '@/components/order-placement-form';
-import { RecentTrades } from '@/components/recent-trades';
-import { OrderBookStats } from '@/components/order-book-stats';
-import { useOrderBookData } from '@/hooks/use-order-book-data';
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { UserOrders } from '@/components/user-orders';
 import { config } from '@/lib/config';
 
 export default function Dashboard() {
   const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
-  const [prefillPrice, setPrefillPrice] = useState<number | undefined>(undefined);
-
-  // Single fetch for the whole page — all panels share this data
-  const orderBookData = useOrderBookData(selectedPairId);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />
 
       <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto w-full">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">Trading Dashboard</h1>
-            <p className="text-sm text-muted-foreground">Private tick-based order book on Aleo</p>
-          </div>
-          <Link href="/user-dashboard">
-            <Button variant="outline" size="sm">My Orders</Button>
-          </Link>
-        </div>
-
-        {/* Live stats bar */}
         <div className="mb-6">
-          <OrderBookStats selectedPairId={selectedPairId} data={orderBookData} />
+          <h1 className="text-2xl font-bold text-foreground">Private Trading</h1>
+          <p className="text-sm text-muted-foreground">
+            Place orders and manage your positions privately on Aleo
+          </p>
         </div>
 
-        {/* Main layout: order book left, form right */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 mb-6">
-          <OrderBookDisplay
-            selectedPairId={selectedPairId}
-            onPriceClick={(price) => setPrefillPrice(price)}
-            data={orderBookData}
-          />
-          <OrderPlacementForm
-            selectedPairId={selectedPairId}
-            onPairChange={setSelectedPairId}
-            prefillPrice={prefillPrice}
-            onPrefillConsumed={() => setPrefillPrice(undefined)}
-          />
+        {/* Main layout: order form left, user orders right */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Order Placement */}
+          <div>
+            <OrderPlacementForm
+              selectedPairId={selectedPairId}
+              onPairChange={setSelectedPairId}
+            />
+          </div>
+
+          {/* User's Orders (Receipts) */}
+          <div>
+            <UserOrders />
+          </div>
         </div>
 
-        {/* Recent trades below */}
-        <RecentTrades selectedPairId={selectedPairId} data={orderBookData} />
+        {/* Privacy Info */}
+        <div className="mt-8 rounded-lg border border-border bg-card/50 p-6">
+          <h2 className="font-semibold text-foreground mb-4">How It Works</h2>
+          <div className="grid md:grid-cols-3 gap-6 text-sm text-muted-foreground">
+            <div className="space-y-2">
+              <h3 className="font-semibold text-foreground">1. Place Order</h3>
+              <p>Submit your buy or sell order. Your order details are encrypted and private.</p>
+            </div>
+            <div className="space-y-2">
+              <h3 className="font-semibold text-foreground">2. Receive Receipt</h3>
+              <p>You receive a Receipt record as proof of your order. Only you can see it.</p>
+            </div>
+            <div className="space-y-2">
+              <h3 className="font-semibold text-foreground">3. Automatic Settlement</h3>
+              <p>When prices cross, orders are matched and settled. You receive a SettlementProof.</p>
+            </div>
+          </div>
+        </div>
       </main>
 
       <footer className="border-t border-border bg-card/50 mt-8">
         <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto flex items-center justify-between text-xs text-muted-foreground">
-          <p>Private order book on <a href="https://aleo.org" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Aleo</a></p>
+          <p>
+            Private order book on{' '}
+            <a
+              href="https://aleo.org"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
+              Aleo
+            </a>
+          </p>
           <div className="flex gap-6">
-            <a href="/" className="hover:text-primary">Home</a>
-            <a href="#" className="hover:text-primary">Docs</a>
+            <a href="/" className="hover:text-primary">
+              Home
+            </a>
+            <a href="#" className="hover:text-primary">
+              Docs
+            </a>
           </div>
         </div>
       </footer>

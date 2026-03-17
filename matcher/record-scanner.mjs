@@ -172,6 +172,14 @@ export class RecordScannerService {
           console.log('[RSS] Target block:', status.target_block || status.latest_block || 'unknown');
         }
 
+        // Query all records to see what's available
+        console.log('[RSS] Checking what records are indexed...');
+        try {
+          await this.queryAllRecords();
+        } catch (e) {
+          console.log('[RSS] Could not query all records:', e.message);
+        }
+
         return { ok: true, data: regResult };
       } else {
         throw new Error('Registration succeeded but no UUID returned');
@@ -250,6 +258,45 @@ export class RecordScannerService {
   }
 
   /**
+   * Query all records (no filter) to see what's indexed
+   */
+  async queryAllRecords() {
+    if (!this.uuid || !this.jwt) {
+      throw new Error('Scanner not initialized');
+    }
+
+    const scannerBase = `https://api.provable.com/scanner/${this.network}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.jwt}`
+    };
+
+    console.log('[RSS] Querying ALL records (no filter)...');
+
+    const res = await fetch(`${scannerBase}/records/owned`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ uuid: this.uuid })
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[RSS] All records query failed:', res.status, errorText);
+      return [];
+    }
+
+    const result = await res.json();
+    const records = Array.isArray(result) ? result : result.data || [];
+    console.log('[RSS] Total records found:', records.length);
+
+    // Log unique programs found
+    const programs = [...new Set(records.map(r => r.program_name || r.program))];
+    console.log('[RSS] Programs found:', programs);
+
+    return records;
+  }
+
+  /**
    * Find Order records with automatic decryption
    */
   async scanOrderRecords(programId) {
@@ -260,13 +307,11 @@ export class RecordScannerService {
     try {
       console.log('[RSS] Scanning for Order records...');
 
-      // Use direct HTTP call instead of SDK
+      // Use direct HTTP call with correct filter format
+      // API expects arrays: programs: [], records: []
       const filter = {
-        unspent: true,
-        filter: {
-          program: programId,
-          record: 'Order'
-        }
+        programs: [programId],
+        records: ['Order']
       };
 
       const records = await this.queryOwnedRecordsDirect(filter);
@@ -306,13 +351,11 @@ export class RecordScannerService {
     try {
       console.log('[RSS] Scanning for CancellationRequest records...');
 
-      // Use direct HTTP call instead of SDK
+      // Use direct HTTP call with correct filter format
+      // API expects arrays: programs: [], records: []
       const filter = {
-        unspent: true,
-        filter: {
-          program: programId,
-          record: 'CancellationRequest'
-        }
+        programs: [programId],
+        records: ['CancellationRequest']
       };
 
       const records = await this.queryOwnedRecordsDirect(filter);

@@ -108,22 +108,22 @@ echo "║    • Two-step cancellation with proofs                   ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# ─── STEP 1: INITIALIZE ─────────────────────────────────────
-if [ "$SKIP_INIT" = false ]; then
+# # ─── STEP 1: INITIALIZE ─────────────────────────────────────
+# if [ "$SKIP_INIT" = false ]; then
 
-    own_tx add_keeper "$KEEPER_ADDRESS"
-    ok "Keeper added"
-    sleep 30
+#     own_tx add_keeper "$KEEPER_ADDRESS"
+#     ok "Keeper added"
+#     sleep 30
 
-    step "STEP 1c — Register token pair"
-    info "Pair ID: $PAIR_ID"
-    info "Base: ALEO ($NATIVE_CREDITS_ID)"
-    info "Quote: TKNB ($TOKEN_B_ID)"
+#     step "STEP 1c — Register token pair"
+#     info "Pair ID: $PAIR_ID"
+#     info "Base: ALEO ($NATIVE_CREDITS_ID)"
+#     info "Quote: TKNB ($TOKEN_B_ID)"
 
-    own_tx register_pair "$PAIR_ID" "$TOKEN_B_ID" "100u64"
-    ok "Token pair registered"
-    sleep 30
-fi
+#     own_tx register_pair "$PAIR_ID" "$TOKEN_B_ID" "100u64"
+#     ok "Token pair registered"
+#     sleep 30
+# fi
 
 # ─── STEP 2: SUBMIT SELL ORDER (Native ALEO) ─────────────────
 step "STEP 2 — Submit SELL order (selling ALEO for TKNB)"

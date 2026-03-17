@@ -1,463 +1,413 @@
 #!/usr/bin/env node
 
 /**
- * Private Orderbook Keeper Bot v1
+ * Private Orderbook Keeper Bot v2
  * ================================
+ * Discovers orders automatically by scanning for keeper-owned
+ * Order records. No frontend POST required.
  *
- * Architecture (v17):
- *   - Users submit orders directly to chain (submit_buy_order, submit_sell_order)
- *   - Order records created on-chain, owned by KEEPER
- *   - Users receive Receipt records as proof
- *   - Users request cancellation via request_cancel() using Receipt
- *   - Keeper scans for Order records and CancellationRequest records
- *   - Keeper matches crossing orders and executes settle_match (returns updated Orders)
- *   - Keeper processes cancellations and creates CancellationProof records
+ * FLOW:
+ *   1. Derive view key from PRIVATE_KEY
+ *   2. Register view key with Provable scanner (once, saved to .keeper-state.json)
+ *   3. Poll scanner for unspent Order and CancellationRequest records
+ *   4. Decrypt each → extract order fields
+ *   5. Match crossing orders (buy.price >= sell.price)
+ *   6. Execute settle_match for matched pairs
+ *   7. Process cancellation requests
  *
- * Bot Functions:
- *   1. Scans chain for Order records owned by keeper (enhanced with RSS)
- *   2. Scans chain for CancellationRequest records (owned by keeper)
- *   3. Maintains in-memory orderbook (buy/sell queues)
- *   4. Matches crossing orders using advanced algorithms (buy.price >= sell.price)
- *   5. Executes settle_match to complete trades (handles partial fills)
- *   6. Processes cancellation requests and executes cancel functions
+ * ENV (.env):
+ *   PRIVATE_KEY            — keeper wallet private key (required)
+ *   PROVABLE_API_KEY       — raw API key from POST /consumers (required)
+ *   PROVABLE_CONSUMER_ID   — consumer.id from POST /consumers (required)
+ *   ORDERBOOK_PROGRAM      — defaults to private_orderbook_v17.aleo
+ *   TOKEN_PROGRAM          — defaults to mock_usdc_orderbook.aleo
+ *   SNARKOS_PATH           — path to snarkos binary (default: snarkos)
+ *   QUERY_ENDPOINT         — Aleo explorer API base URL
+ *   BROADCAST_ENDPOINT     — Aleo broadcast endpoint
+ *   NETWORK_ID             — network ID (default: 1)
+ *   SCAN_INTERVAL          — how often to scan (default: 30000ms)
+ *   MATCH_INTERVAL         — how often to match (default: 10000ms)
+ *   API_PORT               — HTTP status API port (default: 3002)
+ *   SCANNER_START_BLOCK    — block to start scanning from
  *
- * API endpoints:
- *   GET /api/orders           - All known orders (buy/sell)
- *   GET /api/orderbook        - Formatted order book (bids/asks)
- *   GET /api/trades           - Recent trades
- *   GET /health               - Bot status (includes RSS status)
- *   POST /api/match           - Manually trigger matching
- *   GET /api/rss/status       - Record Scanner Service status
- *   POST /api/rss/find-matches - Find best matches via RSS
- *
- * Environment variables:
- *   PRIVATE_KEY            - Orchestrator/keeper private key
- *   VIEW_KEY               - View key for Record Scanner Service
- *   USE_RECORD_SCANNER     - Enable RSS (true/false)
- *   RSS_API_KEY            - RSS API key
- *   RSS_CONSUMER_ID        - RSS consumer ID
- *   API_PORT               - HTTP port (default: 3002)
- *   FRONTEND_ORIGIN        - CORS origin (default: *)\n */
+ * INSTALL SDK:
+ *   npm install @provablehq/sdk
+ */
 
 import 'dotenv/config';
 import { execSync } from 'child_process';
 import https from 'https';
 import http from 'http';
-import {
-  scanOrderRecords,
-  scanCancellationRequestRecords,
-  getLatestBlockHeight,
-  getMapping,
-} from './chain-scanner.mjs';
-import { RecordScannerService } from './record-scanner.mjs';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { Account } from '@provablehq/sdk/testnet.js';
 
-// ═══════════════════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════════════════
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const STATE_FILE = path.join(__dirname, '.keeper-state.json');
 const SNARKOS = process.env.SNARKOS_PATH || 'snarkos';
 
 const CONFIG = {
-  // Keys
-  privateKey: process.env.PRIVATE_KEY || '',
-  viewKey: process.env.VIEW_KEY || '',
-
-  // Program
-  programId: process.env.ORDERBOOK_PROGRAM || 'private_orderbook_v17.aleo',
-  network: process.env.NETWORK || 'testnet',
-  networkId: process.env.NETWORK_ID || '1',
-
-  // Endpoints
-  queryEndpoint: process.env.QUERY_ENDPOINT || 'https://api.explorer.provable.com/v1',
-  broadcastEndpoint: process.env.BROADCAST_ENDPOINT || 'https://api.explorer.provable.com/v1/testnet/transaction/broadcast',
-
-  // Record Scanner Service
-  rssApiKey: process.env.RSS_API_KEY || '',
-  rssConsumerId: process.env.RSS_CONSUMER_ID || '',
-  useRecordScanner: process.env.USE_RECORD_SCANNER === 'true',
-  scannerStartBlock: parseInt(process.env.SCANNER_START_BLOCK || '0'),
-
-  // Intervals
-  scanIntervalMs: parseInt(process.env.SCAN_INTERVAL || '30000'),
-  matchIntervalMs: parseInt(process.env.MATCH_INTERVAL || '10000'),
-
-  // HTTP API
-  apiPort: parseInt(process.env.API_PORT || '3002'),
-  frontendOrigin: process.env.FRONTEND_ORIGIN || '*',
-
-  // Orchestrator/Treasury (will be fetched from chain)
-  orchestratorAddr: process.env.ORCHESTRATOR_ADDR || '',
-  treasuryAddr: process.env.TREASURY_ADDR || '',
+  privateKey:         process.env.PRIVATE_KEY || '',
+  provableApiKey:     process.env.PROVABLE_API_KEY || process.env.RSS_API_KEY || '',
+  provableConsumerId: process.env.PROVABLE_CONSUMER_ID || process.env.RSS_CONSUMER_ID || '',
+  programId:          process.env.ORDERBOOK_PROGRAM || 'private_orderbook_v17.aleo',
+  tokenProgram:       process.env.TOKEN_PROGRAM || 'mock_usdc_orderbook.aleo',
+  networkId:          process.env.NETWORK_ID || '1',
+  queryEndpoint:      process.env.QUERY_ENDPOINT || 'https://api.explorer.provable.com/v1',
+  broadcastEndpoint:  process.env.BROADCAST_ENDPOINT || 'https://api.explorer.provable.com/v1/testnet/transaction/broadcast',
+  scanIntervalMs:     parseInt(process.env.SCAN_INTERVAL || '30000'),
+  matchIntervalMs:    parseInt(process.env.MATCH_INTERVAL || '10000'),
+  apiPort:            parseInt(process.env.API_PORT || '3002'),
+  provableBase:       'https://api.provable.com',
+  scannerBase:        'https://api.provable.com/scanner/testnet',
+  frontendOrigin:     process.env.FRONTEND_ORIGIN || '*',
 };
 
 // ═══════════════════════════════════════════════════════════════
-// STATE: In-memory order store
+// STATE
 // ═══════════════════════════════════════════════════════════════
 
-// Orders indexed by order_id
-const orderStore = new Map();
-// Separate buy/sell queues for matching
-const buyOrders = [];   // sorted by price DESC (best bid first)
-const sellOrders = [];  // sorted by price ASC (best ask first)
-// Recent trades
+const orderStore = new Map();           // orderId → order object
+const cancellationRequests = new Map(); // orderId → cancellation request
+const settledOrderIds = new Set();      // persisted across restarts
 const recentTrades = [];
 const MAX_TRADES = 100;
-// Cancellation requests indexed by order_id
-const cancellationRequests = new Map();
 
+let currentBlock = 0n;
+let isProcessing = false;
+let scannerReady = false;
+let apiJwt = '';
+let scannerUuid = '';
+let keeperAccount = null;
+const botStarted = new Date().toISOString();
 let lastScanAt = null;
 let lastMatchAt = null;
-let botStartedAt = new Date().toISOString();
-let botPaused = false;
-let isProcessing = false;
-
-// Record Scanner Service instance
-let recordScanner = null;
-const RecordScanner = RecordScannerService;
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════
 
-function log(tag, msg) {
-  const ts = new Date().toISOString().substring(11, 19);
-  console.log(`[${ts}] [${tag}] ${msg}`);
+const ts = () => new Date().toISOString().substring(11, 19);
+const log = (t, m) => console.log(`[${ts()}] [${t}] ${m}`);
+const err = (t, m) => console.error(`[${ts()}] [${t}] ERROR: ${m}`);
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      if (!scannerUuid && s.uuid) scannerUuid = s.uuid;
+      if (Array.isArray(s.settledOrderIds)) s.settledOrderIds.forEach(id => settledOrderIds.add(id));
+      log('STATE', `Loaded state: UUID=${scannerUuid?.substring(0, 8)}..., settled=${settledOrderIds.size}`);
+    }
+  } catch { /* ignore */ }
 }
 
-function logError(tag, msg) {
-  const ts = new Date().toISOString().substring(11, 19);
-  console.error(`[${ts}] [${tag}] ❌ ${msg}`);
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      uuid: scannerUuid,
+      settledOrderIds: [...settledOrderIds],
+    }, null, 2));
+  } catch { /* ignore */ }
 }
 
+function fetchJson(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const { method = 'GET', headers = {}, body } = opts;
+    const parsed = new URL(url);
+    const bodyStr = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+        ...headers,
+      },
+    };
+    const client = parsed.protocol === 'https:' ? https : http;
+    const req = client.request(options, res => {
+      let data = '';
+      res.on('data', c => (data += c));
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(data); } });
+    });
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
 
+function fetchWithHeaders(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const { method = 'GET', headers = {}, body } = opts;
+    const parsed = new URL(url);
+    const bodyStr = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+        ...headers,
+      },
+    };
+    const client = parsed.protocol === 'https:' ? https : http;
+    const req = client.request(options, res => {
+      let data = '';
+      res.on('data', c => (data += c));
+      res.on('end', () => {
+        let json; try { json = JSON.parse(data); } catch { json = data; }
+        resolve({ json, headers: res.headers });
+      });
+    });
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
 
-// Note: getMapping is now imported from chain-scanner.mjs
+// ═══════════════════════════════════════════════════════════════
+// RECORD PLAINTEXT PARSER
+// ═══════════════════════════════════════════════════════════════
 
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function parsePlaintext(text) {
+  if (!text) return {};
+  const result = {};
+  const re = /(\w+)\s*:\s*([^,}\s]+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    result[m[1]] = m[2].replace(/\.(private|public)$/, '');
+  }
+  return result;
+}
+
+function numVal(val) {
+  return val ? val.replace(/[a-z][a-z0-9]*$/, '') : '0';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BLOCK HEIGHT
+// ═══════════════════════════════════════════════════════════════
+
+async function fetchBlockHeight() {
+  try {
+    const raw = await fetchJson(`${CONFIG.queryEndpoint}/testnet/block/height/latest`);
+    currentBlock = BigInt(typeof raw === 'number' ? raw : String(raw).trim());
+  } catch (e) {
+    err('BLOCK', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROVABLE AUTH
+// ═══════════════════════════════════════════════════════════════
+
+async function issueJwt() {
+  log('AUTH', 'Requesting JWT...');
+  const { json, headers } = await fetchWithHeaders(
+    `${CONFIG.provableBase}/jwts/${CONFIG.provableConsumerId}`,
+    { method: 'POST', headers: { 'X-Provable-API-Key': CONFIG.provableApiKey } },
+  );
+  const token = headers['authorization'] || headers['x-provable-jwt'] || headers['x-jwt'] || headers['token'];
+  if (!token) throw new Error(`JWT not found in response headers. Body: ${JSON.stringify(json)}`);
+  apiJwt = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+  log('AUTH', `JWT issued (exp: ${json?.exp ?? 'unknown'})`);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROVABLE SCANNER — REGISTER VIEW KEY (first run)
+// ═══════════════════════════════════════════════════════════════
+
+async function ensureUuid(viewKey) {
+  if (scannerUuid) {
+    log('SCANNER', `UUID: ${scannerUuid}`);
+    return;
+  }
+
+  const startBlock = process.env.SCANNER_START_BLOCK
+    ? parseInt(process.env.SCANNER_START_BLOCK)
+    : Math.max(0, Number(currentBlock) - 20000);
+
+  log('SCANNER', `Registering view key (start=${startBlock})...`);
+  const res = await fetchJson(`${CONFIG.scannerBase}/register`, {
+    method: 'POST',
+    headers: { Authorization: apiJwt },
+    body: { view_key: viewKey, start: startBlock },
+  });
+
+  if (!res?.uuid) throw new Error(`Scanner registration failed: ${JSON.stringify(res)}`);
+  scannerUuid = res.uuid;
+  log('SCANNER', `UUID: ${scannerUuid} — saved to ${STATE_FILE}`);
+  saveState();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROVABLE SCANNER — FETCH ORDER RECORDS
+// ═══════════════════════════════════════════════════════════════
+
+async function fetchOrderRecords() {
+  const body = {
+    uuid: scannerUuid.trim(),
+    decrypt: true,
+    unspent: true,
+    filter: {
+      programs: [CONFIG.programId],
+      records: ['Order'],
+      functions: ['submit_buy_order', 'submit_sell_order'],
+    },
+    response_filter: {
+      record_ciphertext: true,
+      record_name: true,
+      record_plaintext: true,
+      transaction_id: true,
+      block_height: true,
+      spent: true,
+    },
+  };
+
+  const res = await fetchJson(`${CONFIG.scannerBase}/records/owned`, {
+    method: 'POST',
+    headers: { Authorization: apiJwt },
+    body,
+  });
+
+  if (!Array.isArray(res)) {
+    err('SCANNER', `Unexpected response: ${JSON.stringify(res).substring(0, 200)}`);
+    return [];
+  }
+  return res;
+}
+
+async function fetchCancellationRecords() {
+  const body = {
+    uuid: scannerUuid.trim(),
+    decrypt: true,
+    unspent: true,
+    filter: {
+      programs: [CONFIG.programId],
+      records: ['CancellationRequest'],
+      functions: ['request_cancel'],
+    },
+    response_filter: {
+      record_ciphertext: true,
+      record_name: true,
+      record_plaintext: true,
+      transaction_id: true,
+      block_height: true,
+      spent: true,
+    },
+  };
+
+  const res = await fetchJson(`${CONFIG.scannerBase}/records/owned`, {
+    method: 'POST',
+    headers: { Authorization: apiJwt },
+    body,
+  });
+
+  if (!Array.isArray(res)) {
+    err('SCANNER', `Unexpected response: ${JSON.stringify(res).substring(0, 200)}`);
+    return [];
+  }
+  return res;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ORDER PARSING
 // ═══════════════════════════════════════════════════════════════
 
-function parseOrderFromPlaintext(plaintext) {
+function parseOrderFromPlaintext(plaintextStr, rec) {
+  const plain = parsePlaintext(plaintextStr);
+
+  const orderId = plain.order_id;
+  if (!orderId) return null;
+
+  return {
+    orderId,
+    owner: plain.owner || '',
+    trader: plain.trader || '',
+    pairId: BigInt(numVal(plain.pair_id) || '1'),
+    isBuy: plain.is_buy === 'true',
+    price: BigInt(numVal(plain.price) || '0'),
+    quantity: BigInt(numVal(plain.quantity) || '0'),
+    quoteTokenId: plain.quote_token_id || '0field',
+    escrowAmount: BigInt(numVal(plain.escrow_amount) || '0'),
+    filled: BigInt(numVal(plain.filled) || '0'),
+    createdAt: parseInt(numVal(plain.created_at) || '0'),
+    expiresAt: parseInt(numVal(plain.expires_at) || '0'),
+    plaintext: plaintextStr.replace(/\s+/g, ' ').trim(),
+    recordCiphertext: rec.record_ciphertext,
+    commitment: rec.commitment,
+    blockHeight: rec.block_height,
+    transactionId: rec.transaction_id,
+    scannedAt: new Date().toISOString(),
+  };
+}
+
+function parseCancellationFromPlaintext(plaintextStr, rec) {
+  const plain = parsePlaintext(plaintextStr);
+
+  const orderId = plain.order_id;
+  if (!orderId) return null;
+
+  return {
+    orderId,
+    owner: plain.owner || '',
+    trader: plain.trader || '',
+    isBuy: plain.is_buy === 'true',
+    createdAt: parseInt(numVal(plain.created_at) || '0'),
+    plaintext: plaintextStr.replace(/\s+/g, ' ').trim(),
+    recordCiphertext: rec.record_ciphertext,
+    blockHeight: rec.block_height,
+    transactionId: rec.transaction_id,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GET MAPPING VALUE
+// ═══════════════════════════════════════════════════════════════
+
+async function getMapping(programId, mappingName, key) {
   try {
-    // Parse Order record fields from decrypted plaintext (v17 format)
-    const ownerMatch = plaintext.match(/owner:\s*(aleo1[a-z0-9]+)/);
-    const traderMatch = plaintext.match(/trader:\s*(aleo1[a-z0-9]+)/);
-    const orderIdMatch = plaintext.match(/order_id:\s*(\d+field)/);
-    const pairIdMatch = plaintext.match(/pair_id:\s*(\d+)u64/);
-    const isBuyMatch = plaintext.match(/is_buy:\s*(true|false)/);
-    const priceMatch = plaintext.match(/price:\s*(\d+)u64/);
-    const quantityMatch = plaintext.match(/quantity:\s*(\d+)u128/);
-    const quoteTokenIdMatch = plaintext.match(/quote_token_id:\s*(\d+field)/);
-    const escrowAmountMatch = plaintext.match(/escrow_amount:\s*(\d+)u128/);
-    const filledMatch = plaintext.match(/filled:\s*(\d+)u128/);
-    const createdAtMatch = plaintext.match(/created_at:\s*(\d+)u32/);
-    const expiresAtMatch = plaintext.match(/expires_at:\s*(\d+)u32/);
-
-    if (!orderIdMatch || !priceMatch || !quantityMatch) {
-      return null;
-    }
-
-    return {
-      owner: ownerMatch?.[1] || '',
-      trader: traderMatch?.[1] || '',
-      orderId: orderIdMatch[1],
-      pairId: pairIdMatch ? BigInt(pairIdMatch[1]) : 1n,
-      isBuy: isBuyMatch?.[1] === 'true',
-      price: BigInt(priceMatch[1]),
-      quantity: BigInt(quantityMatch[1]),
-      quoteTokenId: quoteTokenIdMatch?.[1] || '0field',
-      escrowAmount: BigInt(escrowAmountMatch?.[1] || '0'),
-      filled: BigInt(filledMatch?.[1] || '0'),
-      createdAt: parseInt(createdAtMatch?.[1] || '0'),
-      expiresAt: parseInt(expiresAtMatch?.[1] || '0'),
-      scannedAt: new Date().toISOString(),
-      rawPlaintext: plaintext,
-    };
-  } catch (err) {
-    logError('PARSE', `Failed to parse order: ${err.message}`);
+    const url = `${CONFIG.queryEndpoint}/testnet/program/${programId}/mapping/${mappingName}/${encodeURIComponent(key)}`;
+    const res = await fetchJson(url);
+    return typeof res === 'string' ? res : JSON.stringify(res);
+  } catch (e) {
+    err('MAPPING', `Failed to fetch ${mappingName}[${key}]: ${e.message}`);
     return null;
   }
 }
 
-function parseCancellationRequestFromPlaintext(plaintext) {
-  try {
-    const ownerMatch = plaintext.match(/owner:\s*(aleo1[a-z0-9]+)/);
-    const orderIdMatch = plaintext.match(/order_id:\s*(\d+field)/);
-    const traderMatch = plaintext.match(/trader:\s*(aleo1[a-z0-9]+)/);
-    const isBuyMatch = plaintext.match(/is_buy:\s*(true|false)/);
-    const createdAtMatch = plaintext.match(/created_at:\s*(\d+)u32/);
-
-    if (!orderIdMatch) return null;
-
-    return {
-      owner: ownerMatch?.[1] || '',
-      orderId: orderIdMatch[1],
-      trader: traderMatch?.[1] || '',
-      isBuy: isBuyMatch?.[1] === 'true',
-      createdAt: parseInt(createdAtMatch?.[1] || '0'),
-    };
-  } catch (err) {
-    logError('PARSE', `Failed to parse cancellation request: ${err.message}`);
-    return null;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════
-// SCANNER (Enhanced with Record Scanner Service)
+// SETTLEMENT
 // ═══════════════════════════════════════════════════════════════
 
-async function scanOrders() {
-  // Use Record Scanner Service if available and configured
-  if (CONFIG.useRecordScanner && recordScanner) {
-    log('SCAN', 'Fetching Order records via Record Scanner Service...');
-    try {
-      const records = await recordScanner.scanOrderRecords(CONFIG.programId);
-      log('SCAN', `Found ${records.length} Order record(s) via RSS`);
-
-      const orders = [];
-      for (const record of records) {
-        // If plaintext is available, parse it
-        if (record.plaintext) {
-          const order = parseOrderFromPlaintext(record.plaintext);
-          console.log('Parsed order from RSS plaintext:', order);
-          if (order) {
-            order.recordCiphertext = record.recordCiphertext;
-            order.commitment = record.commitment;
-            order.blockHeight = record.blockHeight;
-            order.transactionId = record.transactionId;
-            orders.push(order);
-          }
-        }
-      }
-
-      log('SCAN', `Parsed ${orders.length} valid order(s) via RSS`);
-      return orders;
-    } catch (err) {
-      logError('SCAN', `RSS scan failed: ${err.message}`);
-      log('SCAN', 'Falling back to chain scanner...');
-      // Fall through to legacy scanning
-    }
-  }
-
-  // Legacy chain scanning fallback
-  log('SCAN', 'Fetching Order records from chain...');
-  try {
-    const records = await scanOrderRecords(CONFIG.programId, 200);
-    log('SCAN', `Found ${records.length} Order record(s)`);
-
-    const orders = [];
-    for (const record of records) {
-      // If plaintext is available, parse it
-      if (record.plaintext) {
-        const order = parseOrderFromPlaintext(record.plaintext);
-        console.log('Parsed order from chain plaintext:', order);
-        if (order) {
-          order.recordCiphertext = record.recordCiphertext;
-          order.commitment = record.commitment;
-          order.blockHeight = record.blockHeight;
-          order.transactionId = record.transactionId;
-          orders.push(order);
-        }
-      }
-    }
-
-    log('SCAN', `Parsed ${orders.length} valid order(s)`);
-    return orders;
-  } catch (err) {
-    logError('SCAN', `Scan failed: ${err.message}`);
-    return [];
-  }
-}
-
-async function scanCancellationRequests() {
-  // Use Record Scanner Service if available and configured
-  if (CONFIG.useRecordScanner && recordScanner) {
-    log('SCAN', 'Checking for cancellation requests via RSS...');
-    try {
-      const records = await recordScanner.scanCancellationRequestRecords(CONFIG.programId);
-      log('SCAN', `Found ${records.length} CancellationRequest record(s) via RSS`);
-
-      const requests = [];
-      for (const record of records) {
-        // If plaintext is available, parse it
-        if (record.plaintext) {
-          const req = parseCancellationRequestFromPlaintext(record.plaintext);
-          if (req) {
-            req.recordCiphertext = record.recordCiphertext;
-            req.commitment = record.commitment;
-            req.blockHeight = record.blockHeight;
-            req.transactionId = record.transactionId;
-            requests.push(req);
-          }
-        }
-      }
-
-      log('SCAN', `Parsed ${requests.length} valid cancellation request(s) via RSS`);
-      return requests;
-    } catch (err) {
-      logError('SCAN', `RSS cancellation scan failed: ${err.message}`);
-      log('SCAN', 'Falling back to chain scanner...');
-      // Fall through to legacy scanning
-    }
-  }
-
-  // Legacy chain scanning fallback
-  log('SCAN', 'Checking for cancellation requests...');
-  try {
-    const records = await scanCancellationRequestRecords(CONFIG.programId, 200);
-    log('SCAN', `Found ${records.length} CancellationRequest record(s)`);
-
-    const requests = [];
-    for (const record of records) {
-      // If plaintext is available, parse it
-      if (record.plaintext) {
-        const req = parseCancellationRequestFromPlaintext(record.plaintext);
-        if (req) {
-          req.recordCiphertext = record.recordCiphertext;
-          req.commitment = record.commitment;
-          req.blockHeight = record.blockHeight;
-          req.transactionId = record.transactionId;
-          requests.push(req);
-        }
-      }
-    }
-
-    log('SCAN', `Parsed ${requests.length} valid cancellation request(s)`);
-    return requests;
-  } catch (err) {
-    logError('SCAN', `Cancellation scan failed: ${err.message}`);
-    return [];
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ORDER BOOK MANAGEMENT
-// ═══════════════════════════════════════════════════════════════
-
-function updateOrderBook(orders) {
-  // Clear current queues
-  buyOrders.length = 0;
-  sellOrders.length = 0;
-
-  // Update store and queues
-  for (const order of orders) {
-    orderStore.set(order.orderId, order);
-
-    const remaining = order.quantity - order.filled;
-    if (remaining <= 0n) continue;
-
-    if (order.isBuy) {
-      buyOrders.push(order);
-    } else {
-      sellOrders.push(order);
-    }
-  }
-
-  // Sort buy orders by price DESC (best bid first)
-  buyOrders.sort((a, b) => Number(b.price - a.price));
-
-  // Sort sell orders by price ASC (best ask first)
-  sellOrders.sort((a, b) => Number(a.price - b.price));
-
-  log('BOOK', `Order book: ${buyOrders.length} bids, ${sellOrders.length} asks`);
-
-  if (buyOrders.length > 0) {
-    log('BOOK', `  Best bid: ${buyOrders[0].price} (qty: ${buyOrders[0].quantity - buyOrders[0].filled})`);
-  }
-  if (sellOrders.length > 0) {
-    log('BOOK', `  Best ask: ${sellOrders[0].price} (qty: ${sellOrders[0].quantity - sellOrders[0].filled})`);
-  }
-}
-
-function findMatchingOrders() {
-  // Find crossing orders: buy.price >= sell.price
-  const matches = [];
-
-  for (const buyOrder of buyOrders) {
-    for (const sellOrder of sellOrders) {
-      // Check if prices cross
-      if (buyOrder.price >= sellOrder.price) {
-        // Check same pair and same quote token
-        if (buyOrder.pairId !== sellOrder.pairId) continue;
-        if (buyOrder.quoteTokenId !== sellOrder.quoteTokenId) continue;
-
-        // Calculate fill quantity (minimum of both remaining quantities)
-        const buyRemaining = buyOrder.quantity - buyOrder.filled;
-        const sellRemaining = sellOrder.quantity - sellOrder.filled;
-        const fillQuantity = buyRemaining < sellRemaining ? buyRemaining : sellRemaining;
-
-        if (fillQuantity > 0n) {
-          // Use midpoint price for settlement
-          const fillPrice = (buyOrder.price + sellOrder.price) / 2n;
-
-          matches.push({
-            buyOrder,
-            sellOrder,
-            fillQuantity,
-            fillPrice,
-          });
-        }
-      }
-    }
-  }
-
-  return matches;
-}
-
-/**
- * Enhanced matching using Record Scanner Service for comprehensive order discovery
- */
-async function findBestMatchesViaRSS() {
-  if (!CONFIG.useRecordScanner || !recordScanner) {
-    return findMatchingOrders(); // Fall back to legacy matching
-  }
-
-  try {
-    log('MATCH', '🔍 Using RSS to find best matches...');
-    const matches = await recordScanner.findBestMatches(CONFIG.programId, 5); // Limit to 5 best matches
-    
-    if (matches.length > 0) {
-      log('MATCH', `✨ RSS found ${matches.length} optimal match(es)`);
-      for (let i = 0; i < matches.length; i++) {
-        const match = matches[i];
-        log('MATCH', `  ${i+1}. Buy ${match.buyOrder.orderId.slice(0,20)}... @ ${match.buyOrder.price} ↔ Sell ${match.sellOrder.orderId.slice(0,20)}... @ ${match.sellOrder.price} (score: ${match.score.toFixed(2)})`);
-      }
-    } else {
-      log('MATCH', 'RSS found no matching orders');
-    }
-    
-    return matches;
-  } catch (err) {
-    logError('MATCH', `RSS matching failed: ${err.message}`);
-    log('MATCH', 'Falling back to legacy matching...');
-    return findMatchingOrders();
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SETTLEMENT (with partial fill support)
-// ═══════════════════════════════════════════════════════════════
-
-async function settleMatch(match) {
-  const { buyOrder, sellOrder, fillQuantity, fillPrice } = match;
+async function settleMatch(buyOrder, sellOrder) {
+  const buyRemaining = buyOrder.quantity - buyOrder.filled;
+  const sellRemaining = sellOrder.quantity - sellOrder.filled;
+  const fillQuantity = buyRemaining < sellRemaining ? buyRemaining : sellRemaining;
+  const fillPrice = (buyOrder.price + sellOrder.price) / 2n;
   const timestamp = Math.floor(Date.now() / 1000);
 
   log('SETTLE', `Settling match:`);
-  log('SETTLE', `  Buy:  ${buyOrder.orderId.slice(0, 20)}... @ ${buyOrder.price}`);
-  log('SETTLE', `  Sell: ${sellOrder.orderId.slice(0, 20)}... @ ${sellOrder.price}`);
+  log('SETTLE', `  Buy:  ${buyOrder.orderId.substring(0, 20)}... @ ${buyOrder.price}`);
+  log('SETTLE', `  Sell: ${sellOrder.orderId.substring(0, 20)}... @ ${sellOrder.price}`);
   log('SETTLE', `  Fill: ${fillQuantity} @ ${fillPrice}`);
 
-  // Check that we have record ciphertexts
-  if (!buyOrder.recordCiphertext || !sellOrder.recordCiphertext) {
-    logError('SETTLE', 'Missing record ciphertext - cannot settle without actual records');
+  if (!buyOrder.plaintext || !sellOrder.plaintext) {
+    err('SETTLE', 'Missing plaintext - cannot settle');
     return false;
   }
 
   try {
     // Get treasury address from chain
-    let treasuryAddr = CONFIG.treasuryAddr;
+    let treasuryAddr = process.env.TREASURY_ADDR;
     if (!treasuryAddr) {
       const treasuryRaw = await getMapping(CONFIG.programId, 'treasury', 'true');
       if (treasuryRaw && treasuryRaw !== 'null') {
@@ -467,23 +417,20 @@ async function settleMatch(match) {
     }
 
     if (!treasuryAddr) {
-      logError('SETTLE', 'Treasury address not found');
+      err('SETTLE', 'Treasury address not found');
       return false;
     }
 
-    // settle_match returns updated Order records (for partial fills)
-    // settle_match(buy_order: Order, sell_order: Order, fill_quantity: u128, fill_price: u64, timestamp: u32, treasury_addr: address)
-    // -> (Order, Order, SettlementProof, SettlementProof, Future)
     const cmd = [
       `${SNARKOS} developer execute`,
-      `--private-key ${CONFIG.privateKey}`,
-      `--query ${CONFIG.queryEndpoint}`,
-      `--broadcast ${CONFIG.broadcastEndpoint}`,
+      `--private-key "${CONFIG.privateKey}"`,
+      `--query "${CONFIG.queryEndpoint}"`,
+      `--broadcast "${CONFIG.broadcastEndpoint}"`,
       `--network ${CONFIG.networkId}`,
       CONFIG.programId,
       'settle_match',
-      `"${buyOrder.recordCiphertext}"`,
-      `"${sellOrder.recordCiphertext}"`,
+      `"${buyOrder.plaintext}"`,
+      `"${sellOrder.plaintext}"`,
       `${fillQuantity}u128`,
       `${fillPrice}u64`,
       `${timestamp}u32`,
@@ -491,16 +438,13 @@ async function settleMatch(match) {
     ].join(' ');
 
     log('SETTLE', 'Executing settle_match via snarkos...');
-    const result = execSync(cmd, {
-      timeout: 180000,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const output = execSync(cmd + ' 2>&1', { timeout: 300000, encoding: 'utf8' });
+    const txId = output.match(/at1[a-z0-9]{58}/)?.[0] || 'unknown';
 
-    log('SETTLE', `✅ Settlement successful!`);
+    log('SETTLE', `Settlement successful! TX: ${txId}`);
 
     // Record trade
-    const trade = {
+    recentTrades.unshift({
       buyOrderId: buyOrder.orderId,
       sellOrderId: sellOrder.orderId,
       buyTrader: buyOrder.trader,
@@ -508,347 +452,276 @@ async function settleMatch(match) {
       quantity: fillQuantity.toString(),
       price: fillPrice.toString(),
       timestamp: new Date().toISOString(),
-    };
-    recentTrades.unshift(trade);
+      txId,
+    });
     if (recentTrades.length > MAX_TRADES) recentTrades.pop();
 
-    // Update orders with partial fill state
-    // In v17, settle_match returns updated Order records
-    // Keeper must re-submit these updated records for future matches
-    // For now, we update local state; in production, parse returned records from snarkos output
-    buyOrder.filled = buyOrder.filled + fillQuantity;
-    buyOrder.escrowAmount = buyOrder.escrowAmount - (fillQuantity * fillPrice / 10000n);
-    
-    sellOrder.filled = sellOrder.filled + fillQuantity;
-    sellOrder.escrowAmount = sellOrder.escrowAmount - fillQuantity;
-
-    // If fully filled, remove from store
-    if (buyOrder.filled >= buyOrder.quantity) {
-      orderStore.delete(buyOrder.orderId);
+    // Mark as settled if fully filled
+    if (buyRemaining <= fillQuantity) {
+      settledOrderIds.add(buyOrder.orderId);
     }
-    if (sellOrder.filled >= sellOrder.quantity) {
-      orderStore.delete(sellOrder.orderId);
+    if (sellRemaining <= fillQuantity) {
+      settledOrderIds.add(sellOrder.orderId);
     }
+    saveState();
 
     return true;
-  } catch (err) {
-    logError('SETTLE', `Failed: ${err.stderr?.substring(0, 300) || err.message}`);
+  } catch (e) {
+    const msg = (e.stdout || '') + (e.stderr || '') || e.message;
+    err('SETTLE', `Failed: ${msg.substring(0, 400)}`);
     return false;
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CANCELLATION (Two-Step Process)
+// CANCELLATION
 // ═══════════════════════════════════════════════════════════════
 
-async function processCancellation(cancellationRequest) {
-  const order = orderStore.get(cancellationRequest.orderId);
+async function processCancellation(cancellation) {
+  const order = orderStore.get(cancellation.orderId);
   if (!order) {
-    logError('CANCEL', `Order not found: ${cancellationRequest.orderId}`);
+    err('CANCEL', `Order not found: ${cancellation.orderId}`);
     return false;
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
   const cancelFn = order.isBuy ? 'cancel_buy_order' : 'cancel_sell_order';
 
-  log('CANCEL', `Processing cancellation for ${order.isBuy ? 'buy' : 'sell'} order: ${order.orderId.slice(0, 20)}...`);
-  log('CANCEL', `  Trader: ${cancellationRequest.trader}`);
-  log('CANCEL', `  Remaining escrow: ${order.escrowAmount}`);
+  log('CANCEL', `Processing cancellation for ${order.isBuy ? 'buy' : 'sell'} order: ${order.orderId.substring(0, 20)}...`);
 
-  // Check that we have record ciphertexts
-  if (!order.recordCiphertext || !cancellationRequest.recordCiphertext) {
-    logError('CANCEL', 'Missing record ciphertext - cannot cancel without actual records');
+  if (!order.plaintext || !cancellation.plaintext) {
+    err('CANCEL', 'Missing plaintext - cannot cancel');
     return false;
   }
 
   try {
-    // cancel_buy_order(order: Order, cancel_req: CancellationRequest, timestamp: u32)
-    // cancel_sell_order(order: Order, cancel_req: CancellationRequest, timestamp: u32)
-    // Both return (CancellationProof, Future)
     const cmd = [
       `${SNARKOS} developer execute`,
-      `--private-key ${CONFIG.privateKey}`,
-      `--query ${CONFIG.queryEndpoint}`,
-      `--broadcast ${CONFIG.broadcastEndpoint}`,
+      `--private-key "${CONFIG.privateKey}"`,
+      `--query "${CONFIG.queryEndpoint}"`,
+      `--broadcast "${CONFIG.broadcastEndpoint}"`,
       `--network ${CONFIG.networkId}`,
       CONFIG.programId,
       cancelFn,
-      `"${order.recordCiphertext}"`,
-      `"${cancellationRequest.recordCiphertext}"`,
+      `"${order.plaintext}"`,
+      `"${cancellation.plaintext}"`,
       `${timestamp}u32`,
     ].join(' ');
 
-    execSync(cmd, {
-      timeout: 180000,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const output = execSync(cmd + ' 2>&1', { timeout: 300000, encoding: 'utf8' });
+    const txId = output.match(/at1[a-z0-9]{58}/)?.[0] || 'unknown';
 
-    log('CANCEL', `✅ Order cancelled, tokens refunded to ${cancellationRequest.trader}`);
+    log('CANCEL', `Order cancelled! TX: ${txId}`);
+
+    settledOrderIds.add(order.orderId);
     orderStore.delete(order.orderId);
-    cancellationRequests.delete(cancellationRequest.orderId);
+    cancellationRequests.delete(cancellation.orderId);
+    saveState();
+
     return true;
-  } catch (err) {
-    logError('CANCEL', `Failed: ${err.stderr?.substring(0, 200) || err.message}`);
+  } catch (e) {
+    const msg = (e.stdout || '') + (e.stderr || '') || e.message;
+    err('CANCEL', `Failed: ${msg.substring(0, 400)}`);
     return false;
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HTTP API SERVER
+// SCAN + PROCESS LOOP
 // ═══════════════════════════════════════════════════════════════
 
-function serializeOrder(order) {
-  return {
-    orderId: order.orderId,
-    trader: order.trader,
-    pairId: order.pairId.toString(),
-    isBuy: order.isBuy,
-    price: order.price.toString(),
-    quantity: order.quantity.toString(),
-    filled: order.filled.toString(),
-    remaining: (order.quantity - order.filled).toString(),
-    quoteTokenId: order.quoteTokenId,
-    escrowAmount: order.escrowAmount.toString(),
-    createdAt: order.createdAt,
-    expiresAt: order.expiresAt,
-    scannedAt: order.scannedAt,
-  };
+async function scanAndProcess() {
+  if (isProcessing) return;
+  isProcessing = true;
+
+  try {
+    await fetchBlockHeight();
+    log('SCAN', `block=${currentBlock} — fetching Order records...`);
+
+    // Fetch order records
+    const rawOrders = await fetchOrderRecords();
+    log('SCAN', `Scanner returned ${rawOrders.length} Order record(s)`);
+
+    // Clear and rebuild order store
+    orderStore.clear();
+    const buyOrders = [];
+    const sellOrders = [];
+
+    for (const rec of rawOrders) {
+      let plaintextStr;
+      try {
+        if (rec.record_plaintext) {
+          plaintextStr = rec.record_plaintext;
+        } else if (rec.record_ciphertext && keeperAccount) {
+          const decrypted = keeperAccount.decryptRecord(rec.record_ciphertext);
+          plaintextStr = decrypted ? (typeof decrypted.toString === 'function' ? decrypted.toString() : String(decrypted)) : null;
+        }
+      } catch (e) {
+        err('SCAN', `Failed to decrypt: ${e.message}`);
+        continue;
+      }
+
+      if (!plaintextStr) continue;
+
+      const order = parseOrderFromPlaintext(plaintextStr, rec);
+      if (!order) continue;
+
+      // Skip already settled orders
+      if (settledOrderIds.has(order.orderId)) continue;
+
+      // Skip fully filled orders
+      const remaining = order.quantity - order.filled;
+      if (remaining <= 0n) continue;
+
+      orderStore.set(order.orderId, order);
+
+      if (order.isBuy) {
+        buyOrders.push(order);
+      } else {
+        sellOrders.push(order);
+      }
+    }
+
+    // Sort for optimal matching
+    buyOrders.sort((a, b) => Number(b.price - a.price));   // DESC - best bid first
+    sellOrders.sort((a, b) => Number(a.price - b.price));  // ASC - best ask first
+
+    log('SCAN', `Order book: ${buyOrders.length} bids, ${sellOrders.length} asks`);
+    if (buyOrders.length > 0) {
+      log('SCAN', `  Best bid: ${buyOrders[0].price} (qty: ${buyOrders[0].quantity - buyOrders[0].filled})`);
+    }
+    if (sellOrders.length > 0) {
+      log('SCAN', `  Best ask: ${sellOrders[0].price} (qty: ${sellOrders[0].quantity - sellOrders[0].filled})`);
+    }
+
+    // Find and execute matches
+    let matchCount = 0;
+    for (const buyOrder of buyOrders) {
+      for (const sellOrder of sellOrders) {
+        // Check crossing condition
+        if (buyOrder.price < sellOrder.price) continue;
+        if (buyOrder.pairId !== sellOrder.pairId) continue;
+        if (buyOrder.quoteTokenId !== sellOrder.quoteTokenId) continue;
+
+        // Check remaining quantities
+        const buyRemaining = buyOrder.quantity - buyOrder.filled;
+        const sellRemaining = sellOrder.quantity - sellOrder.filled;
+        if (buyRemaining <= 0n || sellRemaining <= 0n) continue;
+
+        log('MATCH', `Found crossing orders:`);
+        log('MATCH', `  Buy:  ${buyOrder.orderId.substring(0, 20)}... @ ${buyOrder.price}`);
+        log('MATCH', `  Sell: ${sellOrder.orderId.substring(0, 20)}... @ ${sellOrder.price}`);
+
+        const success = await settleMatch(buyOrder, sellOrder);
+        if (success) {
+          matchCount++;
+          await new Promise(r => setTimeout(r, 5000)); // pause between settlements
+        }
+      }
+    }
+
+    // Fetch and process cancellation requests
+    const rawCancellations = await fetchCancellationRecords();
+    log('SCAN', `Scanner returned ${rawCancellations.length} CancellationRequest record(s)`);
+
+    for (const rec of rawCancellations) {
+      let plaintextStr;
+      try {
+        if (rec.record_plaintext) {
+          plaintextStr = rec.record_plaintext;
+        } else if (rec.record_ciphertext && keeperAccount) {
+          const decrypted = keeperAccount.decryptRecord(rec.record_ciphertext);
+          plaintextStr = decrypted ? (typeof decrypted.toString === 'function' ? decrypted.toString() : String(decrypted)) : null;
+        }
+      } catch (e) {
+        continue;
+      }
+
+      if (!plaintextStr) continue;
+
+      const cancellation = parseCancellationFromPlaintext(plaintextStr, rec);
+      if (!cancellation) continue;
+
+      cancellationRequests.set(cancellation.orderId, cancellation);
+    }
+
+    // Process pending cancellations
+    if (cancellationRequests.size > 0) {
+      log('CANCEL', `Processing ${cancellationRequests.size} cancellation request(s)`);
+      for (const cancellation of cancellationRequests.values()) {
+        const success = await processCancellation(cancellation);
+        if (success) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+
+    lastScanAt = new Date().toISOString();
+    lastMatchAt = new Date().toISOString();
+
+    // Summary
+    log('SCAN', `store: ${orderStore.size} orders | ${matchCount} matched | ${cancellationRequests.size} cancellations pending`);
+  } catch (e) {
+    err('SCAN', e.message);
+  } finally {
+    isProcessing = false;
+  }
 }
 
-function startApiServer() {
-  const server = http.createServer(async (req, res) => {
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', CONFIG.frontendOrigin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// ═══════════════════════════════════════════════════════════════
+// HTTP API SERVER (Minimal - Privacy Preserving)
+// ═══════════════════════════════════════════════════════════════
+// Note: This is a PRIVATE orderbook. Order details are NOT exposed publicly.
+// Users query their own records directly from wallet using requestRecords().
+// The keeper only exposes health status for monitoring.
 
+function startApiServer() {
+  const server = http.createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', CONFIG.frontendOrigin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
     const url = new URL(req.url, `http://localhost:${CONFIG.apiPort}`);
     const json = (data, code = 200) => {
       res.writeHead(code, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data));
+      res.end(JSON.stringify(data, null, 2));
     };
 
-    // GET /health
-    if (url.pathname === '/health' && req.method === 'GET') {
-      const rssStatus = recordScanner ? recordScanner.getStatus() : null;
+    // GET /health - Basic keeper status (no private order data)
+    if (req.method === 'GET' && url.pathname === '/health') {
       return json({
-        status: 'ok',
-        paused: botPaused,
+        status: scannerReady ? 'ok' : 'initializing',
         programId: CONFIG.programId,
-        orderCount: orderStore.size,
-        buyOrders: buyOrders.length,
-        sellOrders: sellOrders.length,
-        pendingCancellations: cancellationRequests.size,
+        currentBlock: currentBlock.toString(),
+        scannerReady,
         lastScanAt,
         lastMatchAt,
-        upSince: botStartedAt,
-        recordScanner: {
-          enabled: CONFIG.useRecordScanner,
-          initialized: !!recordScanner,
-          status: rssStatus
-        }
+        upSince: botStarted,
       });
     }
 
-    // GET /api/orders - all orders
-    if (url.pathname === '/api/orders' && req.method === 'GET') {
-      const orders = Array.from(orderStore.values()).map(serializeOrder);
-      return json({ orders, lastScanAt });
-    }
-
-    // GET /api/orderbook - formatted order book
-    if (url.pathname === '/api/orderbook' && req.method === 'GET') {
-      const bids = buyOrders.map(o => ({
-        price: o.price.toString(),
-        quantity: (o.quantity - o.filled).toString(),
-        trader: o.trader,
-        orderId: o.orderId,
-      }));
-      const asks = sellOrders.map(o => ({
-        price: o.price.toString(),
-        quantity: (o.quantity - o.filled).toString(),
-        trader: o.trader,
-        orderId: o.orderId,
-      }));
-
-      const spread = (buyOrders.length > 0 && sellOrders.length > 0)
-        ? (sellOrders[0].price - buyOrders[0].price).toString()
-        : null;
-
+    // GET /api/stats - Aggregated stats only (no individual order details)
+    if (req.method === 'GET' && url.pathname === '/api/stats') {
       return json({
-        bids,
-        asks,
-        spread,
-        bestBid: buyOrders[0]?.price.toString() || null,
-        bestAsk: sellOrders[0]?.price.toString() || null,
-        lastScanAt
+        totalTrades: recentTrades.length,
+        pendingOrders: orderStore.size,
+        lastTradeAt: recentTrades[0]?.timestamp || null,
+        lastScanAt,
       });
     }
 
-    // GET /api/trades - recent trades
-    if (url.pathname === '/api/trades' && req.method === 'GET') {
-      return json({ trades: recentTrades });
-    }
-
-    // POST /api/match - manually trigger matching
-    if (url.pathname === '/api/match' && req.method === 'POST') {
-      if (isProcessing) {
-        return json({ error: 'Already processing' }, 409);
-      }
-      const result = await matchTick();
-      return json({ matched: result });
-    }
-
-    // POST /api/bot/pause
-    if (url.pathname === '/api/bot/pause' && req.method === 'POST') {
-      botPaused = true;
-      log('API', '⏸ Bot paused');
-      return json({ paused: true });
-    }
-
-    // POST /api/bot/resume
-    if (url.pathname === '/api/bot/resume' && req.method === 'POST') {
-      botPaused = false;
-      log('API', '▶️ Bot resumed');
-      return json({ paused: false });
-    }
-
-    // GET /api/rss/status - Record Scanner Service status
-    if (url.pathname === '/api/rss/status' && req.method === 'GET') {
-      if (!CONFIG.useRecordScanner) {
-        return json({ enabled: false, message: 'Record Scanner Service is disabled' });
-      }
-      
-      if (!recordScanner) {
-        return json({ enabled: true, initialized: false, message: 'Record Scanner Service not initialized' });
-      }
-
-      const status = recordScanner.getStatus();
-      return json({
-        enabled: true,
-        initialized: true,
-        ...status
-      });
-    }
-
-    // POST /api/rss/find-matches - Trigger RSS best match finding
-    if (url.pathname === '/api/rss/find-matches' && req.method === 'POST') {
-      if (!recordScanner) {
-        return json({ error: 'Record Scanner Service not available' }, 400);
-      }
-
-      try {
-        const matches = await recordScanner.findBestMatches(CONFIG.programId, 10);
-        return json({
-          matchCount: matches.length,
-          matches: matches.map(match => ({
-            buyOrderId: match.buyOrder.orderId,
-            sellOrderId: match.sellOrder.orderId,
-            fillQuantity: match.fillQuantity.toString(),
-            fillPrice: match.fillPrice.toString(),
-            score: match.score
-          }))
-        });
-      } catch (err) {
-        return json({ error: err.message }, 500);
-      }
-    }
-
-    res.writeHead(404);
-    res.end();
+    res.writeHead(404); res.end();
   });
 
   server.listen(CONFIG.apiPort, () => {
-    log('API', `✅ HTTP server listening on port ${CONFIG.apiPort}`);
-    log('API', `   GET http://localhost:${CONFIG.apiPort}/api/orderbook`);
-    log('API', `   GET http://localhost:${CONFIG.apiPort}/api/orders`);
-    log('API', `   GET http://localhost:${CONFIG.apiPort}/api/trades`);
-    log('API', `   GET http://localhost:${CONFIG.apiPort}/health`);
-    if (CONFIG.useRecordScanner) {
-      log('API', `   GET http://localhost:${CONFIG.apiPort}/api/rss/status`);
-      log('API', `   POST http://localhost:${CONFIG.apiPort}/api/rss/find-matches`);
-    }
+    log('API', `Listening on :${CONFIG.apiPort}`);
+    log('API', `  GET  /health`);
+    log('API', `  GET  /api/stats`);
+    log('API', ``);
+    log('API', `Note: Order data is private. Users query records via wallet.`);
   });
-
-  server.on('error', err => logError('API', `Server error: ${err.message}`));
-  return server;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// MAIN TICKS
-// ═══════════════════════════════════════════════════════════════
-
-async function scanTick() {
-  if (botPaused) { log('SCAN', 'Bot paused, skipping scan'); return; }
-
-  try {
-    const orders = await scanOrders();
-    const cancellationReqs = await scanCancellationRequests();
-    const blockHeight = await getLatestBlockHeight();
-    
-    lastScanAt = new Date().toISOString();
-    updateOrderBook(orders);
-
-    log('SCAN', `Block height: ${blockHeight}`);
-
-    // Store cancellation requests for processing
-    for (const req of cancellationReqs) {
-      cancellationRequests.set(req.orderId, req);
-      log('SCAN', `Cancellation request found: ${req.orderId.slice(0, 20)}... from ${req.trader.slice(0, 10)}...`);
-    }
-  } catch (err) {
-    logError('SCAN', `Tick error: ${err.message}`);
-  }
-}
-
-async function matchTick() {
-  if (botPaused) { log('MATCH', 'Bot paused, skipping match'); return 0; }
-  if (isProcessing) return 0;
-  isProcessing = true;
-
-  let matchedCount = 0;
-
-  try {
-    // Process matches using enhanced RSS matching or fallback to legacy
-    const matches = await findBestMatchesViaRSS();
-
-    if (matches.length === 0) {
-      log('MATCH', 'No crossing orders found');
-    } else {
-      log('MATCH', `Found ${matches.length} potential match(es)`);
-
-      for (const match of matches) {
-        const success = await settleMatch(match);
-        if (success) {
-          matchedCount++;
-          // Wait between settlements to avoid nonce issues
-          await sleep(5000);
-        }
-      }
-    }
-
-    // Process pending cancellations
-    if (cancellationRequests.size > 0) {
-      log('MATCH', `Processing ${cancellationRequests.size} cancellation request(s)`);
-      for (const cancellationReq of cancellationRequests.values()) {
-        const success = await processCancellation(cancellationReq);
-        if (success) {
-          await sleep(2000);
-        }
-      }
-    }
-
-    lastMatchAt = new Date().toISOString();
-  } catch (err) {
-    logError('MATCH', `Tick error: ${err.message}`);
-  } finally {
-    isProcessing = false;
-  }
-
-  return matchedCount;
+  server.on('error', e => err('API', e.message));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -858,66 +731,66 @@ async function matchTick() {
 async function main() {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║        Private Orderbook Keeper Bot v1 (v17)               ║');
-  console.log('║             Enhanced with Record Scanner Service            ║');
+  console.log('║        Private Orderbook Keeper Bot v2 (Record Scanner)    ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log('');
-  log('BOT', `Program: ${CONFIG.programId}`);
-  log('BOT', `Network: ${CONFIG.network}`);
-  log('BOT', `Scan interval:  ${CONFIG.scanIntervalMs / 1000}s`);
-  log('BOT', `Match interval: ${CONFIG.matchIntervalMs / 1000}s`);
-  log('BOT', `API port: ${CONFIG.apiPort}`);
-  log('BOT', `Record Scanner: ${CONFIG.useRecordScanner ? 'ENABLED' : 'DISABLED'}`);
+
+  if (!CONFIG.privateKey) { err('BOT', 'PRIVATE_KEY not set'); process.exit(1); }
+  if (!CONFIG.provableApiKey) { err('BOT', 'PROVABLE_API_KEY / RSS_API_KEY not set'); process.exit(1); }
+  if (!CONFIG.provableConsumerId) { err('BOT', 'PROVABLE_CONSUMER_ID / RSS_CONSUMER_ID not set'); process.exit(1); }
+
+  keeperAccount = new Account({ privateKey: CONFIG.privateKey });
+  const viewKeyObj = keeperAccount.viewKey();
+  const viewKey = typeof viewKeyObj.to_string === 'function'
+    ? viewKeyObj.to_string()
+    : String(viewKeyObj);
+  log('BOT', `View key: ${viewKey.substring(0, 20)}...`);
+
+  loadState();
+
+  log('BOT', `Program  : ${CONFIG.programId}`);
+  log('BOT', `Network  : ${CONFIG.networkId}`);
+  log('BOT', `Scan     : ${CONFIG.scanIntervalMs / 1000}s`);
+  log('BOT', `Match    : ${CONFIG.matchIntervalMs / 1000}s`);
   console.log('');
 
-  if (!CONFIG.privateKey || CONFIG.privateKey.includes('...')) {
-    logError('BOT', 'Missing PRIVATE_KEY in .env');
-    process.exit(1);
-  }
-
-  // Initialize Record Scanner Service if enabled
-  if (CONFIG.useRecordScanner) {
-    if (!CONFIG.rssApiKey || !CONFIG.viewKey) {
-      logError('BOT', 'Record Scanner enabled but missing RSS_API_KEY or VIEW_KEY in .env');
-      log('BOT', 'Continuing with legacy chain scanning only...');
-    } else {
-      try {
-        log('BOT', 'Initializing Record Scanner Service...');
-        recordScanner = new RecordScannerService(CONFIG.rssApiKey, CONFIG.rssConsumerId || '', CONFIG.network, CONFIG.viewKey);
-        
-        log('BOT', `Registering view key with RSS (start block: ${CONFIG.scannerStartBlock})...`);
-        await recordScanner.registerViewKey(CONFIG.viewKey, CONFIG.scannerStartBlock);
-        
-        log('BOT', '✅ Record Scanner Service initialized successfully');
-        const status = recordScanner.getStatus();
-        log('BOT', `RSS UUID: ${status.uuid}`);
-      } catch (err) {
-        logError('BOT', `RSS initialization failed: ${err.message}`);
-        log('BOT', 'Continuing with legacy chain scanning only...');
-        recordScanner = null;
-      }
-    }
-  }
-
-  // Start HTTP API server
   startApiServer();
 
+  // Scanner setup
+  try {
+    await issueJwt();
+    await fetchBlockHeight();
+    await ensureUuid(viewKey);
+    scannerReady = true;
+    log('BOT', 'Scanner ready.');
+  } catch (e) {
+    err('BOT', `Scanner setup failed: ${e.message} — will retry on next tick`);
+  }
+
+  // Refresh JWT every 12h
+  setInterval(async () => {
+    try { await issueJwt(); } catch (e) { err('AUTH', `JWT refresh failed: ${e.message}`); }
+  }, 12 * 60 * 60 * 1000);
+
   // Initial scan
-  log('BOT', 'Initial order scan...');
-  await scanTick();
+  await scanAndProcess();
 
-  // Initial match attempt
-  log('BOT', 'Initial match check...');
-  await matchTick();
-
-  // Start intervals
-  setInterval(scanTick, CONFIG.scanIntervalMs);
-  setInterval(matchTick, CONFIG.matchIntervalMs);
-
-  log('BOT', '✅ Running. Ctrl+C to stop.');
+  // Scan loop
+  setInterval(async () => {
+    if (!scannerReady) {
+      try {
+        await issueJwt();
+        await fetchBlockHeight();
+        await ensureUuid(viewKey);
+        scannerReady = true;
+        log('BOT', 'Scanner ready (recovered).');
+      } catch (e) {
+        err('BOT', `Scanner retry failed: ${e.message}`);
+        return;
+      }
+    }
+    await scanAndProcess();
+  }, CONFIG.scanIntervalMs);
 }
 
-main().catch(err => {
-  logError('BOT', `Fatal: ${err.message}`);
-  process.exit(1);
-});
+main().catch(e => { err('FATAL', e.message); process.exit(1); });
