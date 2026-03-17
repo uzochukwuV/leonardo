@@ -116,7 +116,7 @@ export function useSubmitOrder() {
           function: 'approve_public',
           inputs: [
             pair.quoteToken.tokenId,
-            config.PROGRAM_ADDRESS,
+            config.CONTRACT_PROGRAM_ID,
             `${escrowAmount}u128`,
           ],
           fee: config.DEFAULT_FEE,

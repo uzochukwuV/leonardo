@@ -85,13 +85,13 @@ export function OrderPlacementForm({
       return;
     }
 
-    const quoteToken = balances.find(b => b.tokenId === pair.quoteToken.tokenId);
+    const quoteToken = balances.find(b => b.token.tokenId === pair.quoteToken.tokenId);
     const quantityRaw = BigInt(Math.floor(qty * Math.pow(10, pair.baseToken.decimals)));
     const priceBps = BigInt(priceToBasisPoints(price));
     const requiredEscrow = calculateEscrowAmount(isBuy, quantityRaw, priceBps);
 
     if (requiredEscrow > 0) {
-      const allowance = quoteToken?.allowances?.[config.PROGRAM_ADDRESS] || 0n;
+      const allowance = quoteToken?.allowances?.[config.CONTRACT_PROGRAM_ID] || 0n;
       setNeedsApproval(allowance < requiredEscrow);
     } else {
       setNeedsApproval(false);
