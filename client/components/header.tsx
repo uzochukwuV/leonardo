@@ -6,7 +6,6 @@ import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
 import { Copy, ExternalLink, Wallet, ChevronDown, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
-import { useOrderBookData } from '@/hooks/use-order-book-data';
 import { useTokenBalances } from '@/hooks/use-token-balances';
 import { config } from '@/lib/config';
 
@@ -18,8 +17,6 @@ export function Header() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Live price from chain
-  const { lastPrice } = useOrderBookData(config.DEFAULT_TOKEN_PAIR);
-
   // Token balances
   const { balances, loading: balancesLoading, refresh: refreshBalances } = useTokenBalances();
 
@@ -81,7 +78,7 @@ export function Header() {
           <div className="text-right">
             <p className="text-xs text-muted-foreground">Last Price</p>
             <p className="text-sm font-mono text-primary">
-              {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'}
+              {/* {lastPrice > 0 ? `$${lastPrice.toFixed(2)}` : '—'} */}
             </p>
           </div>
           <div className="text-right">

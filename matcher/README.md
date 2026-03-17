@@ -1,35 +1,147 @@
-# Private Orderbook Keeper Bot
+# Private Orderbook Keeper Bot v2
 
-Automated keeper bot for the Private Orderbook v12 on Aleo. Scans for orders, matches crossing bids/asks, and executes settlements.
+Automated keeper bot for the **Private Orderbook v17** on Aleo. Scans for orders, matches crossing bids/asks, and executes settlements — all while preserving order privacy.
 
-## Architecture
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  Orderbook Keeper Bot                       │
-├─────────────────────────────────────────────────────────────┤
-│  1. SCAN      │ Provable Scanner → Get Order records        │
-│  2. PARSE     │ Decrypt ciphertexts → Extract order data    │
-│  3. BOOK      │ Build buy/sell queues (sorted by price)     │
-│  4. MATCH     │ Find crossing orders (buy.price >= sell)    │
-│  5. SETTLE    │ snarkos execute settle_match with records   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         PRIVATE ORDERBOOK SYSTEM                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────┐         ┌──────────────────┐         ┌─────────────────┐  │
+│  │   TRADER    │         │   ALEO CHAIN     │         │  KEEPER BOT     │  │
+│  │   (User)    │         │   (On-Chain)     │         │  (This Bot)     │  │
+│  └──────┬──────┘         └────────┬─────────┘         └────────┬────────┘  │
+│         │                         │                            │           │
+│         │  submit_buy_order()     │                            │           │
+│         │  submit_sell_order()    │                            │           │
+│         ├────────────────────────►│                            │           │
+│         │                         │                            │           │
+│         │◄────────────────────────┤  Order record (keeper)     │           │
+│         │   Receipt record (user) │  ─────────────────────────►│           │
+│         │                         │                            │           │
+│         │                         │           Scan via Provable│           │
+│         │                         │◄───────────────────────────┤           │
+│         │                         │                            │           │
+│         │                         │  settle_match()            │           │
+│         │                         │◄───────────────────────────┤           │
+│         │                         │                            │           │
+│         │◄────────────────────────┤  SettlementProof (user)    │           │
+│         │                         │                            │           │
+│  ┌──────┴──────┐                  │                            │           │
+│  │   WALLET    │                  │                            │           │
+│  │ requestRecords()               │                            │           │
+│  │ (View own receipts)            │                            │           │
+│  └─────────────┘                  │                            │           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Privacy Model
+
+**This is a PRIVATE orderbook.** Order details are never exposed publicly.
+
+| What's Private | What's Public |
+|----------------|---------------|
+| Exact limit prices | That an order exists (encrypted) |
+| Order quantities | Settlement events (not order details) |
+| Trader identities | Keeper health status |
+| Order timing | Network consensus |
+
+### How Users See Their Orders
+
+Users query their own records directly from their wallet:
+
+```javascript
+import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
+
+const { requestRecords } = useWallet();
+
+// Fetch user's receipts (only they can decrypt)
+const records = await requestRecords('private_orderbook_v17.aleo', false);
+```
+
+The keeper bot does **NOT** expose order data via API.
+
+## Keeper Bot Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    KEEPER BOT CYCLE                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. AUTH       │ POST /jwts/{consumerId} → Get JWT              │
+│                │ (JWT in Authorization header)                  │
+│                                                                 │
+│  2. REGISTER   │ POST /scanner/testnet/register                 │
+│                │ { view_key, start } → Returns UUID             │
+│                │ (Saved to .keeper-state.json)                  │
+│                                                                 │
+│  3. SCAN       │ POST /scanner/testnet/records/owned            │
+│                │ { uuid, programs: [...], records: [...] }      │
+│                │ → Get Order & CancellationRequest records      │
+│                                                                 │
+│  4. DECRYPT    │ keeperAccount.decryptRecord(ciphertext)        │
+│                │ → Extract order fields from plaintext          │
+│                                                                 │
+│  5. MATCH      │ Find crossing orders:                          │
+│                │ buy.price >= sell.price                        │
+│                │ buy.pairId === sell.pairId                     │
+│                                                                 │
+│  6. SETTLE     │ snarkos developer execute settle_match         │
+│                │ (buy_order, sell_order, fill_qty, fill_price)  │
+│                │ → Creates SettlementProof for both traders     │
+│                                                                 │
+│  7. CANCEL     │ Process CancellationRequest records            │
+│                │ snarkos execute cancel_buy/sell_order          │
+│                │ → Creates CancellationProof, refunds tokens    │
+│                                                                 │
+│  [Repeat every SCAN_INTERVAL]                                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Record Types
+
+| Record | Owner | Purpose |
+|--------|-------|---------|
+| **Order** | Keeper | Encrypted order data (price, qty, trader) |
+| **Receipt** | Trader | Proof of order submission |
+| **CancellationRequest** | Keeper | Request to cancel an order |
+| **SettlementProof** | Trader | Proof of trade execution |
+| **CancellationProof** | Trader | Proof of order cancellation + refund |
 
 ## Prerequisites
 
 - **Node.js** 18+
 - **snarkos** CLI installed and in PATH
-- **ALEO credits** in the orchestrator wallet for transaction fees
+- **ALEO credits** in the keeper wallet for transaction fees
 - **Provable API credentials** for record scanning
 
 ## Setup
 
 ```bash
 cd matcher
-cp .env.orderbook.example .env
+cp .env.example .env
 # Edit .env with your keys
 npm install
+```
+
+## Configuration
+
+```env
+# Required
+PRIVATE_KEY=APrivateKey1zkp...     # Keeper private key
+PROVABLE_API_KEY=your-api-key      # From Provable console
+PROVABLE_CONSUMER_ID=your-uuid     # From Provable console
+
+# Optional
+SCANNER_START_BLOCK=15040000       # Block to start scanning from
+ORDERBOOK_PROGRAM=private_orderbook_v17.aleo
+SCAN_INTERVAL=30000                # Scan interval (ms)
+MATCH_INTERVAL=10000               # Match interval (ms)
+API_PORT=3002                      # Health API port
 ```
 
 ## Run
@@ -40,65 +152,98 @@ npm start
 
 ## API Endpoints
 
+The keeper exposes minimal endpoints for monitoring only:
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/orderbook` | GET | Formatted order book (bids/asks/spread) |
-| `/api/orders` | GET | All known orders |
-| `/api/trades` | GET | Recent trades |
-| `/api/match` | POST | Manually trigger matching |
-| `/api/cancel/:orderId` | POST | Cancel an order |
-| `/api/bot/pause` | POST | Pause the bot |
-| `/api/bot/resume` | POST | Resume the bot |
-| `/health` | GET | Bot status |
+| `/health` | GET | Keeper status (no order data) |
+| `/api/stats` | GET | Aggregated stats only |
 
-## How It Works
+**Note:** Order data is private. Users query records via their wallet.
 
-### Order Scanning (every 30s)
-- Uses Provable Scanner API to fetch Order records owned by orchestrator
-- Decrypts record ciphertexts using view key
-- Parses order data (price, quantity, trader, etc.)
-- Builds in-memory order book with buy/sell queues
+## State Persistence
 
-### Order Matching (every 10s)
-- Finds crossing orders where `buy.price >= sell.price`
-- Uses midpoint price for settlement: `(buy.price + sell.price) / 2`
-- Executes `settle_match` via snarkos with actual record ciphertexts
+The bot saves state to `.keeper-state.json`:
 
-### Settlement
-- Buyer receives base tokens (ALEO) from seller's escrow
-- Seller receives quote tokens (USDC) minus fees
-- Keeper receives settler fee (0.1%)
-- Treasury receives protocol fee (0.05%)
+```json
+{
+  "uuid": "scanner-uuid-from-registration",
+  "settledOrderIds": ["order1field", "order2field"]
+}
+```
 
-## Configuration
+This prevents:
+- Re-registering the view key on restart
+- Re-processing already settled orders
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| PRIVATE_KEY | - | Orchestrator/keeper private key (required) |
-| VIEW_KEY | - | Orchestrator view key for scanning (required) |
-| PROVABLE_CONSUMER_ID | - | Provable API consumer ID |
-| PROVABLE_API_KEY | - | Provable API key |
-| ORDERBOOK_PROGRAM | private_orderbook_v12.aleo | Orderbook program ID |
-| TOKEN_PROGRAM | mock_usdc_orderbook.aleo | Token program ID |
-| SCAN_INTERVAL | 30000 | Order scan interval (ms) |
-| MATCH_INTERVAL | 10000 | Match check interval (ms) |
-| API_PORT | 3002 | HTTP API port |
+## Contract Functions
+
+The keeper interacts with these v17 functions:
+
+| Function | Description |
+|----------|-------------|
+| `settle_match` | Match buy + sell orders, transfer tokens |
+| `cancel_buy_order` | Cancel buy, refund quote tokens to trader |
+| `cancel_sell_order` | Cancel sell, refund base tokens to trader |
+
+## Settlement Flow
+
+```
+Buy Order:  price=1.0500, qty=100 ALEO, escrow=105 USDC
+Sell Order: price=1.0400, qty=100 ALEO, escrow=100 ALEO
+
+Match at midpoint: (1.0500 + 1.0400) / 2 = 1.0450
+
+Buyer receives:  100 ALEO
+Seller receives: 104.50 USDC - fees
+Keeper fee:      0.10% (settler)
+Protocol fee:    0.05% (treasury)
+```
 
 ## Files
 
 ```
 matcher/
-├── orderbook-keeper.mjs    # Main keeper bot
-├── provable-client.mjs     # Provable Scanner API client
-├── .env.orderbook.example  # Configuration template
-├── package.json
-└── snarkos                 # snarkos binary (Linux)
+├── orderbook-keeper.mjs    # Main keeper bot (v2)
+├── record-scanner.mjs      # Legacy scanner class (deprecated)
+├── chain-scanner.mjs       # Fallback chain scanner
+├── .env.example            # Configuration template
+├── .keeper-state.json      # Persisted state (auto-created)
+└── package.json
 ```
 
-## Contract Functions
+## Frontend Integration
 
-The keeper bot interacts with these orderbook functions:
+The frontend uses wallet's `requestRecords()` to fetch user records:
 
-- `settle_match` - Match buy + sell orders, transfer tokens to both traders
-- `cancel_buy_order` - Cancel buy order, refund quote tokens
-- `cancel_sell_order` - Cancel sell order, refund base tokens
+```typescript
+// hooks/use-user-orders.ts
+const records = await wallet.adapter.requestRecords(
+  'private_orderbook_v17.aleo',
+  false  // unspent only
+);
+
+// Filter for Receipt, SettlementProof, CancellationProof
+```
+
+No API calls to the keeper bot are needed for viewing orders.
+
+## Troubleshooting
+
+**Scanner returns empty arrays:**
+- Check `SCANNER_START_BLOCK` is before order creation blocks
+- Ensure view key matches the keeper's private key
+- Wait for scanner to index (may take a few minutes on first run)
+
+**JWT errors:**
+- JWT is in the `Authorization` header, not response body
+- Format: `Bearer <token>`
+
+**Settlement fails:**
+- Ensure keeper has enough ALEO for gas
+- Check that both orders have valid plaintext data
+- Verify treasury address is set in contract
+
+## License
+
+MIT

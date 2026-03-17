@@ -25,10 +25,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   return (
     // PuzzleWalletProvider sets up React Query + WebSocket context that
     // useRecords / useEvents require (window.aleo.puzzleWalletClient).
-    <PuzzleWalletProvider>
+    // <PuzzleWalletProvider>
       <ProvableWalletProvider
         wallets={wallets}
-        decryptPermission={DecryptPermission.AutoDecrypt}
+        decryptPermission={DecryptPermission.OnChainHistory}
         network={config.NETWORK === 'testnet' ? Network.TESTNET : Network.MAINNET}
         autoConnect
         programs={[config.CONTRACT_PROGRAM_ID, 'token_registry.aleo', 'credits.aleo']}
@@ -37,6 +37,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           {children}
         </WalletModalProvider>
       </ProvableWalletProvider>
-    </PuzzleWalletProvider>
+    // </PuzzleWalletProvider>
   );
 }

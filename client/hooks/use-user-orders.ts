@@ -24,15 +24,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useContract } from './use-contract';
 import { config } from '@/lib/config';
+import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 
-// ─── Puzzle SDK (Puzzle wallet only) ─────────────────────────────────────────
-let _useRecords: typeof import('@puzzlehq/sdk').useRecords | null = null;
-try {
-  const puzzleSdk = require('@puzzlehq/sdk');
-  _useRecords = puzzleSdk.useRecords;
-} catch {
-  // Puzzle SDK not available
-}
 
 export interface ReceiptRecord {
   id: string;
@@ -143,52 +136,6 @@ function parsePlaintextToData(plaintext: string): ReceiptRecord['data'] {
 
 // ─── Puzzle SDK path ──────────────────────────────────────────────────────────
 
-function usePuzzleOrders(): { orders: ParsedOrder[]; loading: boolean; error: string | null; refresh: () => void } | null {
-  if (!_useRecords) return null;
-
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const { records, loading, error, fetchPage: refresh } = _useRecords({
-    filter: {
-      programIds: [config.CONTRACT_PROGRAM_ID],
-      status: null,
-    } as any,
-  });
-
-  const orders: ParsedOrder[] = (records ?? [])
-    .map((r) => {
-      const data = r.data as Record<string, string>;
-      const rec: ReceiptRecord = {
-        id: r.transactionId ?? r.transitionId,
-        owner: r.owner ?? '',
-        plaintext: r.plaintext,
-        recordCiphertext: r.ciphertext,
-        data: {
-          order_id: data.order_id ?? '0field',
-          pair_id: data.pair_id ?? '0',
-          is_buy: data.is_buy ?? 'false',
-          price: data.price ?? '0',
-          quantity: data.quantity ?? '0',
-          quote_token_id: data.quote_token_id ?? '0field',
-          escrow_amount: data.escrow_amount ?? '0',
-          created_at: data.created_at ?? '0',
-        },
-        spent: r.status !== null,
-      };
-
-      // If data fields are missing, try parsing from plaintext
-      if (!rec.data.order_id || rec.data.order_id === '0field') {
-        if (r.plaintext) rec.data = parsePlaintextToData(r.plaintext);
-      }
-
-      return rec;
-    })
-    .filter((r) => !r.spent)
-    .map(parseRecord)
-    .filter((o): o is ParsedOrder => o !== null)
-    .sort((a, b) => b.createdAtMs - a.createdAtMs);
-
-  return { orders, loading, error: error ?? null, refresh };
-}
 
 // ─── Provable adapter path ────────────────────────────────────────────────────
 
@@ -272,8 +219,8 @@ function useProvableOrders() {
 // ─── Unified hook ─────────────────────────────────────────────────────────────
 
 export function useUserOrders() {
-  const puzzleResult = usePuzzleOrders();
+
   const provableResult = useProvableOrders();
 
-  return puzzleResult ?? provableResult;
+  return  provableResult;
 }
