@@ -51,7 +51,7 @@ const CONFIG = {
   privateKey:         process.env.PRIVATE_KEY || '',
   provableApiKey:     process.env.PROVABLE_API_KEY || process.env.RSS_API_KEY || '',
   provableConsumerId: process.env.PROVABLE_CONSUMER_ID || process.env.RSS_CONSUMER_ID || '',
-  programId:          process.env.ORDERBOOK_PROGRAM || 'private_orderbook_v17.aleo',
+  programId:          process.env.ORDERBOOK_PROGRAM || 'private_orderbook_v19.aleo',
   tokenProgram:       process.env.TOKEN_PROGRAM || 'mock_usdc_orderbook.aleo',
   networkId:          process.env.NETWORK_ID || '1',
   queryEndpoint:      process.env.QUERY_ENDPOINT || 'https://api.explorer.provable.com/v1',
@@ -73,6 +73,10 @@ const cancellationRequests = new Map(); // orderId → cancellation request
 const settledOrderIds = new Set();      // persisted across restarts
 const recentTrades = [];
 const MAX_TRADES = 100;
+
+// Per-pair order book stats (exposed via API)
+// pairId → { bestBid, bestAsk, bidCount, askCount, spread, midPrice }
+const pairStats = new Map();
 
 let currentBlock = 0n;
 let isProcessing = false;
@@ -544,8 +548,10 @@ async function scanAndProcess() {
 
     // Clear and rebuild order store
     orderStore.clear();
-    const buyOrders = [];
-    const sellOrders = [];
+    pairStats.clear();
+
+    // Group orders by pairId: Map<pairId, { buys: [], sells: [] }>
+    const ordersByPair = new Map();
 
     for (const rec of rawOrders) {
       let plaintextStr;
@@ -575,50 +581,86 @@ async function scanAndProcess() {
 
       orderStore.set(order.orderId, order);
 
+      // Group by pairId
+      const pairKey = order.pairId.toString();
+      if (!ordersByPair.has(pairKey)) {
+        ordersByPair.set(pairKey, { buys: [], sells: [] });
+      }
+      const pairOrders = ordersByPair.get(pairKey);
       if (order.isBuy) {
-        buyOrders.push(order);
+        pairOrders.buys.push(order);
       } else {
-        sellOrders.push(order);
+        pairOrders.sells.push(order);
       }
     }
 
-    // Sort for optimal matching
-    buyOrders.sort((a, b) => Number(b.price - a.price));   // DESC - best bid first
-    sellOrders.sort((a, b) => Number(a.price - b.price));  // ASC - best ask first
-
-    log('SCAN', `Order book: ${buyOrders.length} bids, ${sellOrders.length} asks`);
-    if (buyOrders.length > 0) {
-      log('SCAN', `  Best bid: ${buyOrders[0].price} (qty: ${buyOrders[0].quantity - buyOrders[0].filled})`);
-    }
-    if (sellOrders.length > 0) {
-      log('SCAN', `  Best ask: ${sellOrders[0].price} (qty: ${sellOrders[0].quantity - sellOrders[0].filled})`);
-    }
-
-    // Find and execute matches
+    // Process each pair: sort, compute stats, and match
+    let totalBids = 0;
+    let totalAsks = 0;
     let matchCount = 0;
-    for (const buyOrder of buyOrders) {
-      for (const sellOrder of sellOrders) {
-        // Check crossing condition
-        if (buyOrder.price < sellOrder.price) continue;
-        if (buyOrder.pairId !== sellOrder.pairId) continue;
-        if (buyOrder.quoteTokenId !== sellOrder.quoteTokenId) continue;
 
-        // Check remaining quantities
-        const buyRemaining = buyOrder.quantity - buyOrder.filled;
-        const sellRemaining = sellOrder.quantity - sellOrder.filled;
-        if (buyRemaining <= 0n || sellRemaining <= 0n) continue;
+    for (const [pairKey, { buys, sells }] of ordersByPair) {
+      // Sort orders for this pair
+      buys.sort((a, b) => Number(b.price - a.price));   // DESC - best bid first
+      sells.sort((a, b) => Number(a.price - b.price)); // ASC - best ask first
 
-        log('MATCH', `Found crossing orders:`);
-        log('MATCH', `  Buy:  ${buyOrder.orderId.substring(0, 20)}... @ ${buyOrder.price}`);
-        log('MATCH', `  Sell: ${sellOrder.orderId.substring(0, 20)}... @ ${sellOrder.price}`);
+      totalBids += buys.length;
+      totalAsks += sells.length;
 
-        const success = await settleMatch(buyOrder, sellOrder);
-        if (success) {
-          matchCount++;
-          await new Promise(r => setTimeout(r, 5000)); // pause between settlements
+      // Compute pair stats (best bid/ask for frontend)
+      const bestBid = buys.length > 0 ? buys[0] : null;
+      const bestAsk = sells.length > 0 ? sells[0] : null;
+
+      const stats = {
+        pairId: pairKey,
+        bestBid: bestBid ? {
+          price: bestBid.price.toString(),
+          quantity: (bestBid.quantity - bestBid.filled).toString(),
+        } : null,
+        bestAsk: bestAsk ? {
+          price: bestAsk.price.toString(),
+          quantity: (bestAsk.quantity - bestAsk.filled).toString(),
+        } : null,
+        bidCount: buys.length,
+        askCount: sells.length,
+        spread: (bestBid && bestAsk) ? (bestAsk.price - bestBid.price).toString() : null,
+        midPrice: (bestBid && bestAsk) ? ((bestBid.price + bestAsk.price) / 2n).toString() : null,
+        updatedAt: new Date().toISOString(),
+      };
+      pairStats.set(pairKey, stats);
+
+      // Log pair stats
+      log('SCAN', `Pair ${pairKey}: ${buys.length} bids, ${sells.length} asks`);
+      if (bestBid) log('SCAN', `  Best bid: ${bestBid.price} (qty: ${bestBid.quantity - bestBid.filled})`);
+      if (bestAsk) log('SCAN', `  Best ask: ${bestAsk.price} (qty: ${bestAsk.quantity - bestAsk.filled})`);
+      if (stats.spread) log('SCAN', `  Spread: ${stats.spread} | Mid: ${stats.midPrice}`);
+
+      // Match crossing orders within this pair
+      for (const buyOrder of buys) {
+        for (const sellOrder of sells) {
+          // Check crossing condition
+          if (buyOrder.price < sellOrder.price) continue;
+          if (buyOrder.quoteTokenId !== sellOrder.quoteTokenId) continue;
+
+          // Check remaining quantities
+          const buyRemaining = buyOrder.quantity - buyOrder.filled;
+          const sellRemaining = sellOrder.quantity - sellOrder.filled;
+          if (buyRemaining <= 0n || sellRemaining <= 0n) continue;
+
+          log('MATCH', `Found crossing orders in pair ${pairKey}:`);
+          log('MATCH', `  Buy:  ${buyOrder.orderId.substring(0, 20)}... @ ${buyOrder.price}`);
+          log('MATCH', `  Sell: ${sellOrder.orderId.substring(0, 20)}... @ ${sellOrder.price}`);
+
+          const success = await settleMatch(buyOrder, sellOrder);
+          if (success) {
+            matchCount++;
+            await new Promise(r => setTimeout(r, 5000)); // pause between settlements
+          }
         }
       }
     }
+
+    log('SCAN', `Order book total: ${totalBids} bids, ${totalAsks} asks across ${ordersByPair.size} pair(s)`);
 
     // Fetch and process cancellation requests
     const rawCancellations = await fetchCancellationRecords();
@@ -669,11 +711,13 @@ async function scanAndProcess() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HTTP API SERVER (Minimal - Privacy Preserving)
+// HTTP API SERVER (Privacy Preserving with Price Guidance)
 // ═══════════════════════════════════════════════════════════════
-// Note: This is a PRIVATE orderbook. Order details are NOT exposed publicly.
+// Note: This is a PRIVATE orderbook. Individual order details are NOT exposed.
 // Users query their own records directly from wallet using requestRecords().
-// The keeper only exposes health status for monitoring.
+// The keeper exposes:
+//   - Health/stats for monitoring
+//   - Best bid/ask per pair (aggregate) for optimal order placement
 
 function startApiServer() {
   const server = http.createServer((req, res) => {
@@ -711,6 +755,40 @@ function startApiServer() {
       });
     }
 
+    // GET /api/pairs - Best bid/ask prices per pair (for optimal order placement)
+    // This exposes aggregate price levels without revealing individual orders
+    if (req.method === 'GET' && url.pathname === '/api/pairs') {
+      const pairs = {};
+      for (const [pairId, stats] of pairStats) {
+        pairs[pairId] = {
+          pairId: stats.pairId,
+          bestBid: stats.bestBid,    // { price, quantity } or null
+          bestAsk: stats.bestAsk,    // { price, quantity } or null
+          bidCount: stats.bidCount,
+          askCount: stats.askCount,
+          spread: stats.spread,
+          midPrice: stats.midPrice,
+          updatedAt: stats.updatedAt,
+        };
+      }
+      return json({
+        pairs,
+        pairCount: pairStats.size,
+        lastScanAt,
+      });
+    }
+
+    // GET /api/pairs/:pairId - Stats for a specific pair
+    const pairMatch = url.pathname.match(/^\/api\/pairs\/(\d+)$/);
+    if (req.method === 'GET' && pairMatch) {
+      const pairId = pairMatch[1];
+      const stats = pairStats.get(pairId);
+      if (!stats) {
+        return json({ error: 'Pair not found', pairId }, 404);
+      }
+      return json(stats);
+    }
+
     res.writeHead(404); res.end();
   });
 
@@ -718,6 +796,8 @@ function startApiServer() {
     log('API', `Listening on :${CONFIG.apiPort}`);
     log('API', `  GET  /health`);
     log('API', `  GET  /api/stats`);
+    log('API', `  GET  /api/pairs          - All pairs with best bid/ask`);
+    log('API', `  GET  /api/pairs/:pairId  - Specific pair stats`);
     log('API', ``);
     log('API', `Note: Order data is private. Users query records via wallet.`);
   });

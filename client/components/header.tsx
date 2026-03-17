@@ -63,6 +63,9 @@ export function Header() {
           <Link href="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
             Trading
           </Link>
+          <Link href="/create-pair" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+            Create Pair
+          </Link>
           {connected && (
             <Link href="/user-dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               My Orders

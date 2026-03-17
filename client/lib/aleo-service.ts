@@ -669,7 +669,7 @@ export async function getAllPairs(): Promise<Array<{
 
 /**
  * Fetch trading volume for a pair from `pair_volume` mapping.
- * In v17: pair_volume: u64 → u128
+ * In v18: pair_volume: u64 → u128
  */
 export async function getPairVolume(pairId: number): Promise<bigint> {
   const raw = await fetchMappingValue('pair_volume', `${pairId}u64`);
@@ -679,6 +679,271 @@ export async function getPairVolume(pairId: number): Promise<bigint> {
   } catch {
     return 0n;
   }
+}
+
+// ─── Token Registry Queries ──────────────────────────────────────────────────
+
+/**
+ * Decode a u128 value to a string (name/symbol encoding).
+ * Aleo stores strings as u128 - we need to decode the bytes.
+ */
+function decodeU128ToString(value: string): string {
+  try {
+    // Remove u128 suffix and parse
+    const numStr = value.replace(/u128$/i, '').trim();
+    const bigVal = BigInt(numStr);
+
+    // Convert to bytes and decode as ASCII
+    const bytes: number[] = [];
+    let remaining = bigVal;
+    while (remaining > 0n) {
+      bytes.push(Number(remaining & 0xffn));
+      remaining = remaining >> 8n;
+    }
+
+    // Filter out null bytes and reverse for correct order
+    return bytes
+      .filter(b => b > 0 && b < 128)
+      .map(b => String.fromCharCode(b))
+      .join('');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Fetch token metadata from token_registry.aleo/registered_tokens mapping.
+ * Returns token info including name, symbol, decimals.
+ *
+ * @param tokenId - Token ID as field literal (e.g., "1field", "7002field")
+ */
+export async function getTokenMetadata(tokenId: string): Promise<OnChainTokenMetadata | null> {
+  // Handle native ALEO (0field) specially
+  if (tokenId === '0field') {
+    return {
+      token_id: '0field',
+      name: 'Aleo',
+      symbol: 'ALEO',
+      decimals: 6,
+      supply: 0n,
+      max_supply: 0n,
+      admin: '',
+      external_authorization_required: false,
+      external_authorization_party: '',
+    };
+  }
+
+  try {
+    qlog('token:metadata:fetch', { tokenId });
+    const url = `${BASE_URL}/program/${config.TOKEN_REGISTRY_PROGRAM}/mapping/registered_tokens/${tokenId}`;
+    const res = await fetch(url);
+
+    if (!res.ok) {
+      qlog('token:metadata:not_found', { tokenId, status: res.status });
+      return null;
+    }
+
+    const text = await res.text();
+    qlog('token:metadata:raw', text);
+
+    // Parse the Leo struct
+    const fields = parseLeoValue(text);
+
+    return {
+      token_id: parseField(fields['token_id'] || tokenId),
+      name: decodeU128ToString(fields['name'] || '0u128'),
+      symbol: decodeU128ToString(fields['symbol'] || '0u128'),
+      decimals: parseInt(fields['decimals']?.replace(/u8$/i, '') || '6', 10),
+      supply: parseU128(fields['supply'] || '0u128'),
+      max_supply: parseU128(fields['max_supply'] || '0u128'),
+      admin: fields['admin']?.trim() || '',
+      external_authorization_required: parseBool(fields['external_authorization_required'] || 'false'),
+      external_authorization_party: fields['external_authorization_party']?.trim() || '',
+    };
+  } catch (err) {
+    qlog('token:metadata:error', { tokenId, error: err });
+    return null;
+  }
+}
+
+/**
+ * Fetch token metadata for multiple tokens in parallel.
+ */
+export async function getTokenMetadataBatch(tokenIds: string[]): Promise<Map<string, OnChainTokenMetadata>> {
+  const results = new Map<string, OnChainTokenMetadata>();
+
+  const promises = tokenIds.map(async (tokenId) => {
+    const metadata = await getTokenMetadata(tokenId);
+    if (metadata) {
+      results.set(tokenId, metadata);
+    }
+  });
+
+  await Promise.all(promises);
+  return results;
+}
+
+/**
+ * Get full pair info including token metadata.
+ * Fetches pair from orderbook contract, then fetches token metadata for both tokens.
+ */
+export async function getFullPairInfo(pairId: number): Promise<{
+  pair_id: number;
+  base_token_id: string;
+  quote_token_id: string;
+  tick_size: number;
+  is_active: boolean;
+  base_token: OnChainTokenMetadata | null;
+  quote_token: OnChainTokenMetadata | null;
+} | null> {
+  const pairInfo = await getTokenPairInfo(pairId);
+  if (!pairInfo) return null;
+
+  // Fetch token metadata in parallel
+  const [baseToken, quoteToken] = await Promise.all([
+    getTokenMetadata(pairInfo.base_token_id),
+    getTokenMetadata(pairInfo.quote_token_id),
+  ]);
+
+  return {
+    pair_id: pairId,
+    ...pairInfo,
+    base_token: baseToken,
+    quote_token: quoteToken,
+  };
+}
+
+/**
+ * Get all pairs with full token metadata.
+ */
+export async function getAllPairsWithMetadata(): Promise<Array<{
+  pair_id: number;
+  base_token_id: string;
+  quote_token_id: string;
+  tick_size: number;
+  is_active: boolean;
+  base_token: OnChainTokenMetadata | null;
+  quote_token: OnChainTokenMetadata | null;
+}>> {
+  const pairs = await getAllPairs();
+
+  // Collect all unique token IDs
+  const tokenIds = new Set<string>();
+  for (const pair of pairs) {
+    tokenIds.add(pair.base_token_id);
+    tokenIds.add(pair.quote_token_id);
+  }
+
+  // Fetch all token metadata in parallel
+  const tokenMetadata = await getTokenMetadataBatch(Array.from(tokenIds));
+
+  // Combine pair info with token metadata
+  return pairs.map(pair => ({
+    ...pair,
+    base_token: tokenMetadata.get(pair.base_token_id) || null,
+    quote_token: tokenMetadata.get(pair.quote_token_id) || null,
+  }));
+}
+
+// ─── Provable Tokens API ──────────────────────────────────────────────────────
+
+export interface ProvableToken {
+  token_id: string;
+  token_id_datatype: string | null;
+  symbol: string;
+  display: string;
+  program_name: string;
+  decimals: number;
+  total_supply: string | null;
+  verified: boolean;
+  token_icon_url: string | null;
+  price: string | null;
+  price_change_percentage_24h: string | null;
+}
+
+export interface ProvableTokensResponse {
+  pagination: {
+    limit: number;
+    offset: number;
+    total_count: number;
+    has_next: boolean;
+    has_previous: boolean;
+  };
+  data: ProvableToken[];
+}
+
+/**
+ * Fetch all available tokens from Provable API.
+ * Returns paginated list of testnet tokens.
+ */
+export async function getProvableTokens(
+  limit = 50,
+  offset = 0
+): Promise<ProvableTokensResponse | null> {
+  try {
+    qlog('provable:tokens:fetch', { limit, offset });
+    const url = `https://api.provable.com/v2/testnet/tokens?limit=${limit}&offset=${offset}`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!res.ok) {
+      qlog('provable:tokens:error', { status: res.status });
+      return null;
+    }
+
+    const data = await res.json();
+    qlog('provable:tokens:success', { count: data.data?.length });
+    return data as ProvableTokensResponse;
+  } catch (err) {
+    qlog('provable:tokens:error', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch all tokens (handles pagination automatically).
+ */
+export async function getAllProvableTokens(): Promise<ProvableToken[]> {
+  const allTokens: ProvableToken[] = [];
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const response = await getProvableTokens(limit, offset);
+    if (!response || !response.data.length) break;
+
+    allTokens.push(...response.data);
+
+    if (!response.pagination.has_next) break;
+    offset += limit;
+
+    // Safety limit
+    if (offset > 1000) break;
+  }
+
+  return allTokens;
+}
+
+/**
+ * Format token ID for use in contract calls.
+ * Ensures proper field format (e.g., "1field")
+ */
+export function formatTokenIdForContract(token: ProvableToken): string {
+  const tokenId = token.token_id;
+
+  // If it's already a field format or numeric
+  if (token.token_id_datatype === 'field') {
+    return `${tokenId}field`;
+  }
+
+  // For native tokens (credits.aleo), use 0field
+  if (token.program_name === 'credits.aleo') {
+    return '0field';
+  }
+
+  // Default: treat as numeric field
+  return `${tokenId}field`;
 }
 
 // ─── Keeper Bot API ───────────────────────────────────────────────────────────
@@ -759,28 +1024,3 @@ export async function fetchKeeperHealth(): Promise<KeeperHealthResponse | null> 
   }
 }
 
-// ─── Program Address Helper ──────────────────────────────────────────────────
-
-/**
- * Get the orderbook program address.
- * Returns the configured address from env or null if not set.
- *
- * The program address is required for token approvals. When a user places
- * a buy order, they must approve the orderbook program address to spend
- * their quote tokens.
- *
- * To find the program address:
- *   1. Check the deployment transaction for private_orderbook_v17.aleo
- *   2. Use: leo address private_orderbook_v17.aleo
- *   3. Or look up the program owner in the deployment metadata
- *
- * Set NEXT_PUBLIC_CONTRACT_PROGRAM_ADDRESS in .env
- */
-export function getOrderbookProgramAddress(): string | null {
-  const addr = config.CONTRACT_PROGRAM_ADDRESS;
-  if (addr && addr.startsWith('aleo1')) {
-    return addr;
-  }
-  qlog('program:address:missing', 'CONTRACT_PROGRAM_ADDRESS not configured');
-  return null;
-}

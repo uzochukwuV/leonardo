@@ -1,6 +1,18 @@
 /**
- * Token Pair Registry
- * Defines all tradeable token pairs for the order book
+ * Token Pair Registry (Static Fallback)
+ *
+ * This file contains static token pair definitions used as a fallback when
+ * dynamic data is not available. For production, prefer using the dynamic
+ * hooks which fetch data directly from the blockchain:
+ *
+ *   import { useTradingPairs, useTradingPair } from '@/hooks/use-trading-pairs';
+ *
+ * The dynamic hooks:
+ *   1. Fetch pair info from private_orderbook_v18.aleo/token_pairs mapping
+ *   2. Fetch token metadata from token_registry.aleo/registered_tokens mapping
+ *   3. Combine to create full TradingPair objects with real on-chain data
+ *
+ * Static definitions here should match on-chain registrations for consistency.
  */
 
 export interface TokenInfo {

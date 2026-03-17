@@ -20,7 +20,7 @@
 import credits.aleo;
 import token_registry.aleo;
 
-program private_orderbook_v18.aleo {
+program private_orderbook_v19.aleo {
 
     // Fee constants (in basis points, 1 bp = 0.01%)
     const SETTLER_FEE_BPS: u64 = 10u64;    // 0.10% settler fee
@@ -168,26 +168,28 @@ program private_orderbook_v18.aleo {
     }
 
     // Register trading pair: base_token / quote_token
+    // OPEN: Anyone can register a new trading pair
     // Base token can be 0field (native ALEO) or any ARC20 token
     // Quote token must exist in token_registry
     async transition register_pair(
-        pair_id: u64,
         base_token_id: field,
         quote_token_id: field,
         tick_size: u64
     ) -> Future {
-        return finalize_register_pair(self.caller, pair_id, base_token_id, quote_token_id, tick_size);
+        // Ensure base and quote are different
+        assert_neq(base_token_id, quote_token_id);
+        assert(tick_size > 0u64);
+
+        return finalize_register_pair(base_token_id, quote_token_id, tick_size);
     }
 
     async function finalize_register_pair(
-        caller: address,
-        pair_id: u64,
         base_token_id: field,
         quote_token_id: field,
         tick_size: u64
     ) {
-        let orch: address = Mapping::get(orchestrator, true);
-        assert_eq(caller, orch);
+        // Auto-generate pair_id from current count
+        let pair_id: u64 = Mapping::get_or_use(pair_count, true, 0u64) + 1u64;
 
         // Note: Token validation happens when transfers are attempted
         // If token IDs are invalid, transfer calls will fail

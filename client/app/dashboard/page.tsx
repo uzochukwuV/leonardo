@@ -1,13 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Header } from '@/components/header';
 import { OrderPlacementForm } from '@/components/order-placement-form';
 import { UserOrders } from '@/components/user-orders';
-import { config } from '@/lib/config';
+import { useTradingPairs } from '@/hooks/use-trading-pairs';
 
 export default function Dashboard() {
-  const [selectedPairId, setSelectedPairId] = useState<number>(config.DEFAULT_TOKEN_PAIR);
+  const { pairs, loading: loadingPairs, error: pairsError } = useTradingPairs();
+  const [selectedPairId, setSelectedPairId] = useState<number | null>(null);
+
+  // Auto-select first pair when pairs load
+  useEffect(() => {
+    if (pairs.length > 0 && selectedPairId === null) {
+      setSelectedPairId(pairs[0].id);
+    }
+  }, [pairs, selectedPairId]);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
@@ -19,6 +27,9 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground">
             Place orders and manage your positions privately on Aleo
           </p>
+          {pairsError && (
+            <p className="text-sm text-destructive mt-1">{pairsError}</p>
+          )}
         </div>
 
         {/* Main layout: order form left, user orders right */}
@@ -26,8 +37,10 @@ export default function Dashboard() {
           {/* Order Placement */}
           <div>
             <OrderPlacementForm
-              selectedPairId={selectedPairId}
+              pairs={pairs}
+              selectedPairId={selectedPairId ?? 0}
               onPairChange={setSelectedPairId}
+              loadingPairs={loadingPairs}
             />
           </div>
 
@@ -73,6 +86,9 @@ export default function Dashboard() {
           <div className="flex gap-6">
             <a href="/" className="hover:text-primary">
               Home
+            </a>
+            <a href="/create-pair" className="hover:text-primary">
+              Create Pair
             </a>
             <a href="#" className="hover:text-primary">
               Docs

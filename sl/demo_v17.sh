@@ -1,9 +1,14 @@
 #!/bin/bash
 # ============================================================
-# Private Order Book v17 — Record-Based Demo (CORRECTED)
+# Private Order Book v19 — Record-Based Demo
 # ============================================================
 # Architecture: Keeper model (orders owned by keeper)
-# This script demonstrates the complete v17 order book flow
+# This script demonstrates the complete v18 order book flow
+#
+# v18 Changes:
+#   - TokenPair now includes base_token_id (supports any base token)
+#   - Pair enumeration via pair_count and pair_ids mappings
+#   - activate_pair / deactivate_pair admin functions
 #
 # Usage:
 #   ./demo_v17.sh                  — full run (init + orders + settle)
@@ -25,7 +30,7 @@ done
 # ─── CONFIG ──────────────────────────────────────────────────
 NETWORK="testnet"
 ENDPOINT="https://api.explorer.provable.com/v1"
-PROGRAM="private_orderbook_v17.aleo"  # ✅ FIXED: v10 → v17
+PROGRAM="private_orderbook_v19.aleo"
 REGISTRY="token_registry.aleo"
 
 # Admin/Keeper private key (same for demo)
@@ -116,14 +121,14 @@ echo ""
 #     sleep 30
 
 #     step "STEP 1c — Register token pair"
-#     info "Pair ID: $PAIR_ID"
 #     info "Base: ALEO ($NATIVE_CREDITS_ID)"
 #     info "Quote: TKNB ($TOKEN_B_ID)"
 
-#     # register_pair(pair_id, base_token_id, quote_token_id, tick_size)
+#     # register_pair(base_token_id, quote_token_id, tick_size)
+#     # v18: pair_id is auto-generated, anyone can register
 #     # base_token_id: 0field = native ALEO
-#     own_tx register_pair "$PAIR_ID" "$NATIVE_CREDITS_ID" "$TOKEN_B_ID" "100u64"
-#     ok "Token pair registered"
+#     own_tx register_pair "$NATIVE_CREDITS_ID" "$TOKEN_B_ID" "100u64"
+#     ok "Token pair registered (ID auto-assigned)"
 #     sleep 30
 # fi
 

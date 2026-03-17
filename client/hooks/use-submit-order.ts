@@ -97,14 +97,6 @@ export function useSubmitOrder() {
         return null;
       }
 
-      // Program address is required for token approvals
-      // The orderbook contract uses self.address which is the program's address (aleo1...)
-      const programAddress = config.CONTRACT_PROGRAM_ID;
-      if (!programAddress) {
-        setError('Program address not configured. Please set NEXT_PUBLIC_CONTRACT_PROGRAM_ADDRESS.');
-        return null;
-      }
-
       const pair = getTokenPair(pairId);
       if (!pair) {
         setError('Invalid token pair');
@@ -119,15 +111,14 @@ export function useSubmitOrder() {
         const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
 
         setStep('approving');
-        // Approve the orderbook program ADDRESS (not program ID) to spend quote tokens
+        // Approve the orderbook program to spend quote tokens
         // token_registry.aleo/approve_public(token_id, spender, amount)
-        // spender must be an address (aleo1...), not a program ID
         const txId = await execTx({
           program: config.TOKEN_REGISTRY_PROGRAM,
           function: 'approve_public',
           inputs: [
             pair.quoteToken.tokenId,
-            programAddress,  // Use the program's address, not program ID
+            config.CONTRACT_PROGRAM_ID,
             `${escrowAmount}u128`,
           ],
           fee: config.DEFAULT_FEE,

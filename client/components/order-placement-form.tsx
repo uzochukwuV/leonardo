@@ -1,32 +1,27 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Button } from '@/components/ui/button';
 import {
-  getAllActiveTokenPairs,
-  getTokenPair,
   calculateEscrowAmount,
   priceToBasisPoints,
 } from '@/lib/token-pairs';
 import { config } from '@/lib/config';
-import { getTokenPairInfo } from '@/lib/aleo-service';
-import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown, Wifi, WifiOff, Info } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown, Wifi, WifiOff, TrendingUp, TrendingDown, Info } from 'lucide-react';
 import { useSubmitOrder } from '@/hooks/use-submit-order';
 import { useTokenBalances } from '@/hooks/use-token-balances';
+import { TradingPair } from '@/hooks/use-trading-pairs';
+import { usePairPrices } from '@/hooks/use-pair-prices';
 
 interface OrderPlacementFormProps {
+  pairs: TradingPair[];
   selectedPairId: number;
   onPairChange: (id: number) => void;
+  loadingPairs?: boolean;
   prefillPrice?: number;
   onPrefillConsumed?: () => void;
-}
-
-interface OnChainPairInfo {
-  quote_token_id: string;
-  tick_size: number;
-  is_active: boolean;
 }
 
 const EXPIRY_OPTIONS = [
@@ -37,8 +32,10 @@ const EXPIRY_OPTIONS = [
 ] as const;
 
 export function OrderPlacementForm({
+  pairs,
   selectedPairId,
   onPairChange,
+  loadingPairs = false,
   prefillPrice,
   onPrefillConsumed,
 }: OrderPlacementFormProps) {
@@ -54,10 +51,8 @@ export function OrderPlacementForm({
   const [needsApproval, setNeedsApproval] = useState(false);
   const [approvalCompleted, setApprovalCompleted] = useState(false);
 
-  // On-chain pair info
-  const [onChainPair, setOnChainPair] = useState<OnChainPairInfo | null>(null);
-  const [loadingPairInfo, setLoadingPairInfo] = useState(false);
-  const [pairError, setPairError] = useState<string | null>(null);
+  // Fetch best bid/ask from keeper
+  const { getBestBid, getBestAsk, getMidPrice } = usePairPrices();
 
   const {
     approveQuoteTokens,
@@ -77,43 +72,13 @@ export function OrderPlacementForm({
   const submitting = step !== 'idle' && step !== 'done';
   const success = step === 'done';
 
-  const pair = getTokenPair(selectedPairId);
+  // Get selected pair from props
+  const pair = useMemo(() => pairs.find(p => p.id === selectedPairId), [pairs, selectedPairId]);
 
-  // Fetch on-chain pair info when pair changes
-  useEffect(() => {
-    let mounted = true;
-
-    async function fetchPairInfo() {
-      setLoadingPairInfo(true);
-      setPairError(null);
-      setOnChainPair(null);
-
-      try {
-        const info = await getTokenPairInfo(selectedPairId);
-        if (!mounted) return;
-
-        if (info) {
-          setOnChainPair(info);
-          if (!info.is_active) {
-            setPairError('This trading pair is not active on-chain');
-          }
-        } else {
-          setPairError('Pair not found on-chain. It may not be registered yet.');
-        }
-      } catch (err) {
-        if (mounted) {
-          setPairError('Failed to fetch pair info from chain');
-        }
-      } finally {
-        if (mounted) {
-          setLoadingPairInfo(false);
-        }
-      }
-    }
-
-    fetchPairInfo();
-    return () => { mounted = false; };
-  }, [selectedPairId]);
+  // Get best prices for selected pair
+  const bestBid = pair ? getBestBid(pair.id) : null;
+  const bestAsk = pair ? getBestAsk(pair.id) : null;
+  const midPrice = pair ? getMidPrice(pair.id) : null;
 
   // Consume prefill price from order book click
   useEffect(() => {
@@ -165,9 +130,29 @@ export function OrderPlacementForm({
   }, [side, selectedPairId, resetFormState]);
 
 
-  if (!pair) return null;
+  if (!pair) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-6 text-center">
+        {loadingPairs ? (
+          <div className="flex flex-col items-center gap-2">
+            <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Loading trading pairs...</p>
+          </div>
+        ) : pairs.length === 0 ? (
+          <div className="flex flex-col items-center gap-2">
+            <AlertCircle className="w-6 h-6 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">No trading pairs available</p>
+            <a href="/create-pair" className="text-sm text-primary hover:underline">
+              Create a new pair
+            </a>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Select a trading pair</p>
+        )}
+      </div>
+    );
+  }
 
-  const activePairs = getAllActiveTokenPairs();
   const escrowToken = isBuy ? pair.quoteToken : pair.baseToken;
 
   // Live escrow calculation
@@ -285,9 +270,8 @@ export function OrderPlacementForm({
             className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border border-border bg-input text-sm font-semibold hover:bg-muted/30 transition-colors"
           >
             <span className="flex items-center gap-2">
-              <span>{pair.baseToken.icon}</span>
               {pair.name}
-              {loadingPairInfo && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+              {loadingPairs && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
             </span>
             <ChevronDown
               className={`w-4 h-4 text-muted-foreground transition-transform ${
@@ -296,8 +280,8 @@ export function OrderPlacementForm({
             />
           </button>
           {showPairs && (
-            <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
-              {activePairs.map((p) => (
+            <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-lg border border-border bg-card shadow-xl overflow-hidden max-h-64 overflow-y-auto">
+              {pairs.map((p: TradingPair) => (
                 <button
                   key={p.id}
                   type="button"
@@ -311,7 +295,6 @@ export function OrderPlacementForm({
                       : 'text-foreground'
                   }`}
                 >
-                  <span>{p.baseToken.icon}</span>
                   {p.name}
                   <span className="ml-auto text-xs text-muted-foreground">
                     ID: {p.id}
@@ -322,31 +305,72 @@ export function OrderPlacementForm({
           )}
         </div>
 
-        {/* On-chain pair info */}
-        {onChainPair && !pairError && (
+        {/* Best Prices from Keeper */}
+        {(bestBid !== null || bestAsk !== null) && (
           <div className="rounded-lg bg-muted/20 border border-border p-2.5 text-xs">
             <div className="flex items-center gap-1 text-muted-foreground mb-1">
               <Info className="w-3 h-3" />
-              <span>On-chain Info</span>
+              <span>Market Prices</span>
             </div>
-            <div className="grid grid-cols-2 gap-x-4 text-xs">
-              <span className="text-muted-foreground">Quote Token:</span>
-              <span className="font-mono">{onChainPair.quote_token_id}</span>
-              <span className="text-muted-foreground">Tick Size:</span>
-              <span className="font-mono">{onChainPair.tick_size} bps</span>
-              <span className="text-muted-foreground">Status:</span>
-              <span className={onChainPair.is_active ? 'text-primary' : 'text-destructive'}>
-                {onChainPair.is_active ? 'Active' : 'Inactive'}
-              </span>
+            <div className="grid grid-cols-2 gap-2">
+              {bestBid !== null && (
+                <div className="flex items-center gap-1">
+                  <TrendingUp className="w-3 h-3 text-primary" />
+                  <span className="text-muted-foreground">Best Bid:</span>
+                  <span className="font-mono text-primary">${bestBid.toFixed(4)}</span>
+                </div>
+              )}
+              {bestAsk !== null && (
+                <div className="flex items-center gap-1">
+                  <TrendingDown className="w-3 h-3 text-destructive" />
+                  <span className="text-muted-foreground">Best Ask:</span>
+                  <span className="font-mono text-destructive">${bestAsk.toFixed(4)}</span>
+                </div>
+              )}
             </div>
+            {midPrice !== null && (
+              <p className="text-muted-foreground mt-1">
+                Mid: <span className="font-mono">${midPrice.toFixed(4)}</span>
+                {isBuy && bestAsk !== null && (
+                  <button
+                    type="button"
+                    onClick={() => setLimitPrice(bestAsk.toFixed(4))}
+                    className="ml-2 text-primary hover:underline"
+                  >
+                    Use best ask for instant fill
+                  </button>
+                )}
+                {!isBuy && bestBid !== null && (
+                  <button
+                    type="button"
+                    onClick={() => setLimitPrice(bestBid.toFixed(4))}
+                    className="ml-2 text-primary hover:underline"
+                  >
+                    Use best bid for instant fill
+                  </button>
+                )}
+              </p>
+            )}
           </div>
         )}
 
-        {pairError && (
-          <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/30">
-            <p className="text-xs text-destructive">{pairError}</p>
+        {/* Pair Info */}
+        <div className="rounded-lg bg-muted/10 border border-border p-2 text-xs">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div>
+              <span className="text-muted-foreground block">Tick Size</span>
+              <span className="font-mono">{pair.tickSize} bps</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground block">Base</span>
+              <span className="font-mono">{pair.baseToken.symbol}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground block">Quote</span>
+              <span className="font-mono">{pair.quoteToken.symbol}</span>
+            </div>
           </div>
-        )}
+        </div>
 
         {/* Buy / Sell */}
         <div>
@@ -386,8 +410,8 @@ export function OrderPlacementForm({
             <input
               type="number"
               step="0.0001"
-              min={pair.minPrice / 10000}
-              max={pair.maxPrice / 10000}
+              min={config.MIN_PRICE_BPS / 10000}
+              max={config.MAX_PRICE_BPS / 10000}
               value={limitPrice}
               onChange={(e) => setLimitPrice(e.target.value)}
               disabled={!connected || submitting}
@@ -521,7 +545,7 @@ export function OrderPlacementForm({
           <form onSubmit={showApprovalButton ? handleApprove : handleSubmit}>
             <Button
               type="submit"
-              disabled={!canSubmit || submitting || (isBuy && loadingBalances) || (pairError && !onChainPair)}
+              disabled={!canSubmit || submitting || (isBuy && loadingBalances) || !pair.isActive}
               className={`w-full font-bold py-3 transition-all ${
                 isBuy
                   ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
