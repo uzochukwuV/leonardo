@@ -39,6 +39,18 @@ export interface OnChainTokenPair {
   active: boolean;
 }
 
+export interface OnChainTokenMetadata {
+  token_id: string;
+  name: string;           // Decoded from u128
+  symbol: string;         // Decoded from u128
+  decimals: number;
+  supply: bigint;
+  max_supply: bigint;
+  admin: string;
+  external_authorization_required: boolean;
+  external_authorization_party: string;
+}
+
 export interface OnChainTickInfo {
   token_pair: number;
   tick_id: number;
@@ -553,16 +565,24 @@ export async function isKeeper(address: string): Promise<boolean> {
 
 /**
  * Fetch token pair info from `token_pairs` mapping.
- * In v17: TokenPair { quote_token_id: field, tick_size: u64, is_active: bool }
+ * In v17: TokenPair { base_token_id: field, quote_token_id: field, tick_size: u64, is_active: bool }
  */
 export async function getTokenPairInfo(
   pairId: number
-): Promise<{ quote_token_id: string; tick_size: number; is_active: boolean } | null> {
+): Promise<{
+  base_token_id: string;
+  quote_token_id: string;
+  tick_size: number;
+  is_active: boolean;
+} | null> {
+  qlog('pair:info:fetch', { pairId });
   const raw = await fetchMappingValue('token_pairs', `${pairId}u64`);
+  qlog('pair:info:raw', raw);
   if (!raw) return null;
   try {
     const fields = parseLeoValue(raw);
     return {
+      base_token_id: parseField(fields['base_token_id'] || '0field'),
       quote_token_id: parseField(fields['quote_token_id'] || '0field'),
       tick_size: parseU64(fields['tick_size'] || '100u64'),
       is_active: parseBool(fields['is_active'] || 'false'),
@@ -570,6 +590,81 @@ export async function getTokenPairInfo(
   } catch {
     return null;
   }
+}
+
+/**
+ * Get the total number of registered pairs.
+ * Uses the pair_count mapping: bool => u64
+ */
+export async function getPairCount(): Promise<number> {
+  const raw = await fetchMappingValue('pair_count', 'true');
+  if (!raw) return 0;
+  try {
+    return parseU64(raw.trim());
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Get pair ID at a specific index (for enumeration).
+ * Uses the pair_ids mapping: u64 => u64
+ */
+export async function getPairIdAtIndex(index: number): Promise<number | null> {
+  const raw = await fetchMappingValue('pair_ids', `${index}u64`);
+  if (!raw) return null;
+  try {
+    return parseU64(raw.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get all registered trading pairs.
+ * Enumerates through pair_ids mapping using pair_count.
+ */
+export async function getAllPairs(): Promise<Array<{
+  pair_id: number;
+  base_token_id: string;
+  quote_token_id: string;
+  tick_size: number;
+  is_active: boolean;
+}>> {
+  const count = await getPairCount();
+  qlog('pairs:enumerate', { count });
+
+  if (count === 0) return [];
+
+  const pairs: Array<{
+    pair_id: number;
+    base_token_id: string;
+    quote_token_id: string;
+    tick_size: number;
+    is_active: boolean;
+  }> = [];
+
+  // Fetch all pairs in parallel
+  const promises = Array.from({ length: count }, async (_, i) => {
+    const pairId = await getPairIdAtIndex(i);
+    if (pairId === null) return null;
+
+    const pairInfo = await getTokenPairInfo(pairId);
+    if (!pairInfo) return null;
+
+    return {
+      pair_id: pairId,
+      ...pairInfo,
+    };
+  });
+
+  const results = await Promise.all(promises);
+  for (const result of results) {
+    if (result) pairs.push(result);
+  }
+
+  qlog('pairs:enumerate:done', { found: pairs.length });
+  return pairs;
 }
 
 /**
@@ -662,4 +757,30 @@ export async function fetchKeeperHealth(): Promise<KeeperHealthResponse | null> 
     qlog('keeper:health:error', err);
     return null;
   }
+}
+
+// ─── Program Address Helper ──────────────────────────────────────────────────
+
+/**
+ * Get the orderbook program address.
+ * Returns the configured address from env or null if not set.
+ *
+ * The program address is required for token approvals. When a user places
+ * a buy order, they must approve the orderbook program address to spend
+ * their quote tokens.
+ *
+ * To find the program address:
+ *   1. Check the deployment transaction for private_orderbook_v17.aleo
+ *   2. Use: leo address private_orderbook_v17.aleo
+ *   3. Or look up the program owner in the deployment metadata
+ *
+ * Set NEXT_PUBLIC_CONTRACT_PROGRAM_ADDRESS in .env
+ */
+export function getOrderbookProgramAddress(): string | null {
+  const addr = config.CONTRACT_PROGRAM_ADDRESS;
+  if (addr && addr.startsWith('aleo1')) {
+    return addr;
+  }
+  qlog('program:address:missing', 'CONTRACT_PROGRAM_ADDRESS not configured');
+  return null;
 }

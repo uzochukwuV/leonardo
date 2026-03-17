@@ -1,11 +1,11 @@
 /**
  * Application Configuration
- * Compatible with private_orderbook_v17.aleo
+ * Compatible with private_orderbook_v18.aleo
  */
 
 export const config = {
-  // Deployed contract program ID (v17)
-  CONTRACT_PROGRAM_ID: 'private_orderbook_v17.aleo',
+  // Deployed contract program ID (v18)
+  CONTRACT_PROGRAM_ID: 'private_orderbook_v18.aleo',
 
   // Native ALEO credits token ID (0field = use credits.aleo)
   NATIVE_CREDITS_ID: '0field',

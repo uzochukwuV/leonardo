@@ -103,7 +103,7 @@ export const TOKEN_PAIRS: Record<number, TokenPair> = {
     minPrice: 10000, // $1.00
     maxPrice: 10000000, // $1000.00
     maxTickRange: 50, // 50 ticks = $0.50 range
-    active: false, // Pair 1 on testnet uses 1field/2field tokens owned by different admin
+    active: true, // Pair 1 on testnet uses 1field/2field tokens owned by different admin
   },
   2: {
     id: 2,

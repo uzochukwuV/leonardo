@@ -1,5 +1,5 @@
 {
-  "program": "private_orderbook_v17.aleo",
+  "program": "private_orderbook_v18.aleo",
   "version": "0.1.0",
   "description": "Private tick-based order book with multi-token support via token_registry",
   "license": "MIT",

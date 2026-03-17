@@ -120,7 +120,9 @@ echo ""
 #     info "Base: ALEO ($NATIVE_CREDITS_ID)"
 #     info "Quote: TKNB ($TOKEN_B_ID)"
 
-#     own_tx register_pair "$PAIR_ID" "$TOKEN_B_ID" "100u64"
+#     # register_pair(pair_id, base_token_id, quote_token_id, tick_size)
+#     # base_token_id: 0field = native ALEO
+#     own_tx register_pair "$PAIR_ID" "$NATIVE_CREDITS_ID" "$TOKEN_B_ID" "100u64"
 #     ok "Token pair registered"
 #     sleep 30
 # fi

@@ -1,6 +1,6 @@
 import credits.aleo;
 import token_registry.aleo;
-program private_orderbook_v17.aleo;
+program private_orderbook_v18.aleo;
 
 record Order:
     owner as address.private;
@@ -51,6 +51,7 @@ record CancellationProof:
     cancelled_at as u32.private;
 
 struct TokenPair:
+    base_token_id as field;
     quote_token_id as field;
     tick_size as u64;
     is_active as boolean;
@@ -106,10 +107,18 @@ mapping order_counter:
     key as boolean.public;
     value as u64.public;
 
+mapping pair_count:
+    key as boolean.public;
+    value as u64.public;
+
+mapping pair_ids:
+    key as u64.public;
+    value as u64.public;
+
 function add_keeper:
     input r0 as address.private;
     async add_keeper self.caller r0 into r1;
-    output r1 as private_orderbook_v17.aleo/add_keeper.future;
+    output r1 as private_orderbook_v18.aleo/add_keeper.future;
 
 finalize add_keeper:
     input r0 as address.public;
@@ -121,7 +130,7 @@ finalize add_keeper:
 function remove_keeper:
     input r0 as address.private;
     async remove_keeper self.caller r0 into r1;
-    output r1 as private_orderbook_v17.aleo/remove_keeper.future;
+    output r1 as private_orderbook_v18.aleo/remove_keeper.future;
 
 finalize remove_keeper:
     input r0 as address.public;
@@ -133,7 +142,7 @@ finalize remove_keeper:
 function set_treasury:
     input r0 as address.private;
     async set_treasury self.caller r0 into r1;
-    output r1 as private_orderbook_v17.aleo/set_treasury.future;
+    output r1 as private_orderbook_v18.aleo/set_treasury.future;
 
 finalize set_treasury:
     input r0 as address.public;
@@ -145,20 +154,54 @@ finalize set_treasury:
 function register_pair:
     input r0 as u64.private;
     input r1 as field.private;
-    input r2 as u64.private;
-    async register_pair self.caller r0 r1 r2 into r3;
-    output r3 as private_orderbook_v17.aleo/register_pair.future;
+    input r2 as field.private;
+    input r3 as u64.private;
+    async register_pair self.caller r0 r1 r2 r3 into r4;
+    output r4 as private_orderbook_v18.aleo/register_pair.future;
 
 finalize register_pair:
     input r0 as address.public;
     input r1 as u64.public;
     input r2 as field.public;
-    input r3 as u64.public;
-    get orchestrator[true] into r4;
-    assert.eq r0 r4;
-    cast r2 r3 true into r5 as TokenPair;
-    set r5 into token_pairs[r1];
+    input r3 as field.public;
+    input r4 as u64.public;
+    get orchestrator[true] into r5;
+    assert.eq r0 r5;
+    cast r2 r3 r4 true into r6 as TokenPair;
+    set r6 into token_pairs[r1];
     set 0u128 into pair_volume[r1];
+    get.or_use pair_count[true] 0u64 into r7;
+    set r1 into pair_ids[r7];
+    add r7 1u64 into r8;
+    set r8 into pair_count[true];
+
+function deactivate_pair:
+    input r0 as u64.private;
+    async deactivate_pair self.caller r0 into r1;
+    output r1 as private_orderbook_v18.aleo/deactivate_pair.future;
+
+finalize deactivate_pair:
+    input r0 as address.public;
+    input r1 as u64.public;
+    get orchestrator[true] into r2;
+    assert.eq r0 r2;
+    get token_pairs[r1] into r3;
+    cast r3.base_token_id r3.quote_token_id r3.tick_size false into r4 as TokenPair;
+    set r4 into token_pairs[r1];
+
+function activate_pair:
+    input r0 as u64.private;
+    async activate_pair self.caller r0 into r1;
+    output r1 as private_orderbook_v18.aleo/activate_pair.future;
+
+finalize activate_pair:
+    input r0 as address.public;
+    input r1 as u64.public;
+    get orchestrator[true] into r2;
+    assert.eq r0 r2;
+    get token_pairs[r1] into r3;
+    cast r3.base_token_id r3.quote_token_id r3.tick_size true into r4 as TokenPair;
+    set r4 into token_pairs[r1];
 
 function submit_buy_order:
     input r0 as u64.private;
@@ -179,11 +222,11 @@ function submit_buy_order:
     hash.bhp256 r11 into r12 as field;
     cast r7 self.caller r12 r0 true r2 r3 r1 r4 0u128 r5 r6 into r13 as Order.record;
     cast self.caller r12 r0 true r2 r3 r1 r4 r5 into r14 as Receipt.record;
-    call token_registry.aleo/transfer_public_as_signer r1 private_orderbook_v17.aleo r4 into r15;
+    call token_registry.aleo/transfer_public_as_signer r1 private_orderbook_v18.aleo r4 into r15;
     async submit_buy_order r0 r1 r2 r3 r4 r7 r15 into r16;
     output r13 as Order.record;
     output r14 as Receipt.record;
-    output r16 as private_orderbook_v17.aleo/submit_buy_order.future;
+    output r16 as private_orderbook_v18.aleo/submit_buy_order.future;
 
 finalize submit_buy_order:
     input r0 as u64.public;
@@ -230,12 +273,12 @@ function submit_sell_order:
     cast r7 self.caller r12 r0 false r2 r3 r1 r13 0u128 r5 r6 into r14 as Order.record;
     cast r4 into r15 as u128;
     cast self.caller r12 r0 false r2 r3 r1 r15 r5 into r16 as Receipt.record;
-    call credits.aleo/transfer_public_as_signer private_orderbook_v17.aleo r4 into r17;
+    call credits.aleo/transfer_public_as_signer private_orderbook_v18.aleo r4 into r17;
     cast r4 into r18 as u128;
     async submit_sell_order r0 r1 r2 r3 r18 r7 r17 into r19;
     output r14 as Order.record;
     output r16 as Receipt.record;
-    output r19 as private_orderbook_v17.aleo/submit_sell_order.future;
+    output r19 as private_orderbook_v18.aleo/submit_sell_order.future;
 
 finalize submit_sell_order:
     input r0 as u64.public;
@@ -311,7 +354,7 @@ function settle_match:
     output r30 as Order.record;
     output r31 as SettlementProof.record;
     output r32 as SettlementProof.record;
-    output r38 as private_orderbook_v17.aleo/settle_match.future;
+    output r38 as private_orderbook_v18.aleo/settle_match.future;
 
 finalize settle_match:
     input r0 as u64.public;
@@ -350,7 +393,7 @@ function request_cancel:
     cast r1 r0.order_id self.caller r0.is_buy r2 into r3 as CancellationRequest.record;
     async request_cancel r1 into r4;
     output r3 as CancellationRequest.record;
-    output r4 as private_orderbook_v17.aleo/request_cancel.future;
+    output r4 as private_orderbook_v18.aleo/request_cancel.future;
 
 finalize request_cancel:
     input r0 as address.public;
@@ -370,7 +413,7 @@ function cancel_buy_order:
     call token_registry.aleo/transfer_public r0.quote_token_id r1.trader r0.escrow_amount into r5;
     async cancel_buy_order self.caller r5 into r6;
     output r4 as CancellationProof.record;
-    output r6 as private_orderbook_v17.aleo/cancel_buy_order.future;
+    output r6 as private_orderbook_v18.aleo/cancel_buy_order.future;
 
 finalize cancel_buy_order:
     input r0 as address.public;
@@ -394,7 +437,7 @@ function cancel_sell_order:
     call credits.aleo/transfer_public r1.trader r6 into r7;
     async cancel_sell_order self.caller r7 into r8;
     output r5 as CancellationProof.record;
-    output r8 as private_orderbook_v17.aleo/cancel_sell_order.future;
+    output r8 as private_orderbook_v18.aleo/cancel_sell_order.future;
 
 finalize cancel_sell_order:
     input r0 as address.public;
@@ -427,4 +470,5 @@ constructor:
     set true into keepers[program_owner];
     set program_owner into treasury[true];
     set 0u64 into order_counter[true];
+    set 0u64 into pair_count[true];
 

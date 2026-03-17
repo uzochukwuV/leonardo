@@ -11,15 +11,22 @@ import {
   priceToBasisPoints,
 } from '@/lib/token-pairs';
 import { config } from '@/lib/config';
-import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown, Wifi, WifiOff } from 'lucide-react';
+import { getTokenPairInfo } from '@/lib/aleo-service';
+import { Lock, AlertCircle, CheckCircle2, Loader2, Wallet, ChevronDown, Wifi, WifiOff, Info } from 'lucide-react';
 import { useSubmitOrder } from '@/hooks/use-submit-order';
-import { useTokenBalances } from '@/hooks/use-token-balances'; // For checking allowance
+import { useTokenBalances } from '@/hooks/use-token-balances';
 
 interface OrderPlacementFormProps {
   selectedPairId: number;
   onPairChange: (id: number) => void;
   prefillPrice?: number;
   onPrefillConsumed?: () => void;
+}
+
+interface OnChainPairInfo {
+  quote_token_id: string;
+  tick_size: number;
+  is_active: boolean;
 }
 
 const EXPIRY_OPTIONS = [
@@ -45,6 +52,12 @@ export function OrderPlacementForm({
   const [expiresAt, setExpiresAt] = useState(0);
   const [showPairs, setShowPairs] = useState(false);
   const [needsApproval, setNeedsApproval] = useState(false);
+  const [approvalCompleted, setApprovalCompleted] = useState(false);
+
+  // On-chain pair info
+  const [onChainPair, setOnChainPair] = useState<OnChainPairInfo | null>(null);
+  const [loadingPairInfo, setLoadingPairInfo] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
 
   const {
     approveQuoteTokens,
@@ -59,12 +72,48 @@ export function OrderPlacementForm({
     loadingOrchestrator,
   } = useSubmitOrder();
 
-  const { balances, loading: loadingBalances } = useTokenBalances();
+  const { balances, loading: loadingBalances, refresh: refreshBalances } = useTokenBalances();
 
   const submitting = step !== 'idle' && step !== 'done';
   const success = step === 'done';
 
   const pair = getTokenPair(selectedPairId);
+
+  // Fetch on-chain pair info when pair changes
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchPairInfo() {
+      setLoadingPairInfo(true);
+      setPairError(null);
+      setOnChainPair(null);
+
+      try {
+        const info = await getTokenPairInfo(selectedPairId);
+        if (!mounted) return;
+
+        if (info) {
+          setOnChainPair(info);
+          if (!info.is_active) {
+            setPairError('This trading pair is not active on-chain');
+          }
+        } else {
+          setPairError('Pair not found on-chain. It may not be registered yet.');
+        }
+      } catch (err) {
+        if (mounted) {
+          setPairError('Failed to fetch pair info from chain');
+        }
+      } finally {
+        if (mounted) {
+          setLoadingPairInfo(false);
+        }
+      }
+    }
+
+    fetchPairInfo();
+    return () => { mounted = false; };
+  }, [selectedPairId]);
 
   // Consume prefill price from order book click
   useEffect(() => {
@@ -78,8 +127,14 @@ export function OrderPlacementForm({
   const price = parseFloat(limitPrice) || 0;
   const qty = parseFloat(quantity) || 0;
 
-  // Check for approval requirement
+  // Check for approval requirement (skip if approval just completed)
   useEffect(() => {
+    // If approval was just completed, don't reset needsApproval
+    if (approvalCompleted) {
+      setNeedsApproval(false);
+      return;
+    }
+
     if (!connected || !pair || !isBuy || loadingBalances || !address) {
       setNeedsApproval(false);
       return;
@@ -90,18 +145,19 @@ export function OrderPlacementForm({
     const priceBps = BigInt(priceToBasisPoints(price));
     const requiredEscrow = calculateEscrowAmount(isBuy, quantityRaw, priceBps);
 
-    if (requiredEscrow > 0) {
+    if (requiredEscrow > 0n) {
       const allowance = quoteToken?.allowances?.[config.CONTRACT_PROGRAM_ID] || 0n;
       setNeedsApproval(allowance < requiredEscrow);
     } else {
       setNeedsApproval(false);
     }
-  }, [isBuy, qty, price, connected, pair, balances, loadingBalances, address]);
+  }, [isBuy, qty, price, connected, pair, balances, loadingBalances, address, approvalCompleted]);
 
-  // Reset form state on side or pair change
+  // Reset approval state when side or pair changes
   const resetFormState = useCallback(() => {
     reset();
     setQuantity('');
+    setApprovalCompleted(false);
   }, [reset]);
 
   useEffect(() => {
@@ -126,13 +182,21 @@ export function OrderPlacementForm({
     e.preventDefault();
     if (!price || price <= 0 || !qty || qty <= 0) return;
 
-    await approveQuoteTokens({
+    const txId = await approveQuoteTokens({
       pairId: selectedPairId,
       isBuy,
       limitPriceUsd: price,
       quantity: qty,
       expiresAt,
     });
+
+    // After successful approval, mark it and skip future allowance checks
+    if (txId) {
+      setApprovalCompleted(true);
+      setNeedsApproval(false);
+      // Refresh balances to get updated allowance (async, don't wait)
+      refreshBalances();
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -149,18 +213,15 @@ export function OrderPlacementForm({
 
     if (result) {
       setQuantity('');
+      setApprovalCompleted(false);
       setTimeout(reset, 12_000);
     }
   };
 
-  const stepItems = [
-    { id: 'approving', label: 'Approve' },
-    { id: 'submitting', label: 'Submit order' },
-    { id: 'polling-order', label: 'Confirming' },
-  ];
-
   const canSubmit = connected && !loadingOrchestrator && orchestratorAddr && qty > 0 && price > 0;
-  const showApprovalButton = isBuy && needsApproval;
+
+  // Show approval button only if: needs approval AND approval not yet completed
+  const showApprovalButton = isBuy && needsApproval && !approvalCompleted && !approvalTxId;
 
   const getButtonText = () => {
     if (submitting) {
@@ -226,6 +287,7 @@ export function OrderPlacementForm({
             <span className="flex items-center gap-2">
               <span>{pair.baseToken.icon}</span>
               {pair.name}
+              {loadingPairInfo && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
             </span>
             <ChevronDown
               className={`w-4 h-4 text-muted-foreground transition-transform ${
@@ -252,13 +314,39 @@ export function OrderPlacementForm({
                   <span>{p.baseToken.icon}</span>
                   {p.name}
                   <span className="ml-auto text-xs text-muted-foreground">
-                    tick {(p.tickSize / 10000).toFixed(2)}
+                    ID: {p.id}
                   </span>
                 </button>
               ))}
             </div>
           )}
         </div>
+
+        {/* On-chain pair info */}
+        {onChainPair && !pairError && (
+          <div className="rounded-lg bg-muted/20 border border-border p-2.5 text-xs">
+            <div className="flex items-center gap-1 text-muted-foreground mb-1">
+              <Info className="w-3 h-3" />
+              <span>On-chain Info</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 text-xs">
+              <span className="text-muted-foreground">Quote Token:</span>
+              <span className="font-mono">{onChainPair.quote_token_id}</span>
+              <span className="text-muted-foreground">Tick Size:</span>
+              <span className="font-mono">{onChainPair.tick_size} bps</span>
+              <span className="text-muted-foreground">Status:</span>
+              <span className={onChainPair.is_active ? 'text-primary' : 'text-destructive'}>
+                {onChainPair.is_active ? 'Active' : 'Inactive'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {pairError && (
+          <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/30">
+            <p className="text-xs text-destructive">{pairError}</p>
+          </div>
+        )}
 
         {/* Buy / Sell */}
         <div>
@@ -307,6 +395,9 @@ export function OrderPlacementForm({
               className="w-full px-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
             />
           </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Price in basis points: {priceToBasisPoints(price)} bps
+          </p>
         </div>
 
         {/* Quantity */}
@@ -327,6 +418,9 @@ export function OrderPlacementForm({
             placeholder="0.000000"
             className="w-full px-3 py-2.5 rounded-lg bg-input border border-border text-sm font-mono text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all disabled:opacity-50"
           />
+          <p className="text-xs text-muted-foreground mt-1">
+            Raw: {quantityRaw.toString()} microcredits
+          </p>
         </div>
 
         {/* Expiry */}
@@ -370,6 +464,10 @@ export function OrderPlacementForm({
               >
                 {escrowDisplay} {escrowToken.symbol}
               </span>
+              <span className="text-muted-foreground">Escrow raw</span>
+              <span className="font-mono text-right text-muted-foreground">
+                {escrowRaw.toString()}u128
+              </span>
             </div>
           </div>
         )}
@@ -378,7 +476,9 @@ export function OrderPlacementForm({
         {connected && !submitting && !success && (
           <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            {isBuy ? "For buy orders, you'll first approve the token spend, then submit the order." : "Your order will be submitted to the keeper. You'll receive a Receipt record as proof."}
+            {isBuy
+              ? `Buy orders require ${pair.quoteToken.symbol} approval to token_registry.aleo, then submit.`
+              : "Sell orders escrow ALEO directly. You'll receive a Receipt record as proof."}
           </p>
         )}
 
@@ -393,7 +493,7 @@ export function OrderPlacementForm({
             <CheckCircle2 className="w-4 h-4 text-sky-500 mt-0.5 shrink-0" />
             <div>
               <p className="text-xs text-sky-500 font-semibold">Token approved successfully!</p>
-               <p className="text-xs text-muted-foreground mt-1">Ready to submit your buy order.</p>
+              <p className="text-xs text-muted-foreground mt-1">Click the button below to submit your buy order.</p>
               <p className="text-xs text-muted-foreground mt-1 font-mono break-all">{approvalTxId}</p>
             </div>
           </div>
@@ -421,7 +521,7 @@ export function OrderPlacementForm({
           <form onSubmit={showApprovalButton ? handleApprove : handleSubmit}>
             <Button
               type="submit"
-              disabled={!canSubmit || submitting || (isBuy && loadingBalances)}
+              disabled={!canSubmit || submitting || (isBuy && loadingBalances) || (pairError && !onChainPair)}
               className={`w-full font-bold py-3 transition-all ${
                 isBuy
                   ? 'bg-primary hover:bg-primary/90 text-primary-foreground'

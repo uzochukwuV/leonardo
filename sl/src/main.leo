@@ -1,5 +1,5 @@
 // ============================================================================
-// Private Order Book v16 - Multi-Token Support
+// Private Order Book v17 - Multi-Token Support
 // ============================================================================
 // Architecture:
 //   - Order records owned by ORCHESTRATOR (keeper) - private, encrypted
@@ -8,15 +8,19 @@
 //   - Settlement creates SettlementProof records for traders
 //
 // Token Design:
-//   - Base token: Native ALEO (via credits.aleo)
+//   - Base token: Native ALEO (0field) or any ARC20 token
 //   - Quote token: Any ARC20 token (via token_registry.aleo)
-//   - Supports any ALEO/TOKEN pair where TOKEN is registered in token_registry
+//   - Supports any TOKEN/TOKEN pair registered in the orderbook
+//
+// Storage:
+//   - Uses storage vectors for pair enumeration
+//   - Pairs are indexed by pair_id (u64) and stored with full token info
 // ============================================================================
 
 import credits.aleo;
 import token_registry.aleo;
 
-program private_orderbook_v17.aleo {
+program private_orderbook_v18.aleo {
 
     // Fee constants (in basis points, 1 bp = 0.01%)
     const SETTLER_FEE_BPS: u64 = 10u64;    // 0.10% settler fee
@@ -87,6 +91,7 @@ program private_orderbook_v17.aleo {
     // ========== STRUCTS ==========
 
     struct TokenPair {
+        base_token_id: field,     // Base token (0field = ALEO, else ARC20 token)
         quote_token_id: field,    // Quote token (USDC, USDT, etc.)
         tick_size: u64,           // Minimum price increment
         is_active: bool,
@@ -115,6 +120,10 @@ program private_orderbook_v17.aleo {
     mapping pair_volume: u64 => u128;
     mapping order_counter: bool => u64;
 
+    // Pair enumeration - tracks registered pair IDs
+    mapping pair_count: bool => u64;           // Total number of pairs
+    mapping pair_ids: u64 => u64;              // Index => pair_id (for enumeration)
+
     // ========== CONSTRUCTOR ==========
 
     @custom
@@ -123,6 +132,7 @@ program private_orderbook_v17.aleo {
         Mapping::set(keepers, self.program_owner, true);
         Mapping::set(treasury, true, self.program_owner);
         Mapping::set(order_counter, true, 0u64);
+        Mapping::set(pair_count, true, 0u64);
     }
 
     // ========== ADMIN FUNCTIONS ==========
@@ -157,19 +167,22 @@ program private_orderbook_v17.aleo {
         Mapping::set(treasury, true, new_treasury);
     }
 
-    // Register trading pair: ALEO / quote_token
+    // Register trading pair: base_token / quote_token
+    // Base token can be 0field (native ALEO) or any ARC20 token
     // Quote token must exist in token_registry
     async transition register_pair(
         pair_id: u64,
+        base_token_id: field,
         quote_token_id: field,
         tick_size: u64
     ) -> Future {
-        return finalize_register_pair(self.caller, pair_id, quote_token_id, tick_size);
+        return finalize_register_pair(self.caller, pair_id, base_token_id, quote_token_id, tick_size);
     }
 
     async function finalize_register_pair(
         caller: address,
         pair_id: u64,
+        base_token_id: field,
         quote_token_id: field,
         tick_size: u64
     ) {
@@ -177,15 +190,59 @@ program private_orderbook_v17.aleo {
         assert_eq(caller, orch);
 
         // Note: Token validation happens when transfers are attempted
-        // If quote_token_id is invalid, transfer calls will fail
+        // If token IDs are invalid, transfer calls will fail
 
         let pair: TokenPair = TokenPair {
+            base_token_id: base_token_id,
             quote_token_id: quote_token_id,
             tick_size: tick_size,
             is_active: true,
         };
         Mapping::set(token_pairs, pair_id, pair);
         Mapping::set(pair_volume, pair_id, 0u128);
+
+        // Add to pair enumeration for querying all pairs
+        let count: u64 = Mapping::get_or_use(pair_count, true, 0u64);
+        Mapping::set(pair_ids, count, pair_id);
+        Mapping::set(pair_count, true, count + 1u64);
+    }
+
+    // Deactivate a trading pair (admin only)
+    async transition deactivate_pair(pair_id: u64) -> Future {
+        return finalize_deactivate_pair(self.caller, pair_id);
+    }
+
+    async function finalize_deactivate_pair(caller: address, pair_id: u64) {
+        let orch: address = Mapping::get(orchestrator, true);
+        assert_eq(caller, orch);
+
+        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
+        let updated_pair: TokenPair = TokenPair {
+            base_token_id: pair.base_token_id,
+            quote_token_id: pair.quote_token_id,
+            tick_size: pair.tick_size,
+            is_active: false,
+        };
+        Mapping::set(token_pairs, pair_id, updated_pair);
+    }
+
+    // Reactivate a trading pair (admin only)
+    async transition activate_pair(pair_id: u64) -> Future {
+        return finalize_activate_pair(self.caller, pair_id);
+    }
+
+    async function finalize_activate_pair(caller: address, pair_id: u64) {
+        let orch: address = Mapping::get(orchestrator, true);
+        assert_eq(caller, orch);
+
+        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
+        let updated_pair: TokenPair = TokenPair {
+            base_token_id: pair.base_token_id,
+            quote_token_id: pair.quote_token_id,
+            tick_size: pair.tick_size,
+            is_active: true,
+        };
+        Mapping::set(token_pairs, pair_id, updated_pair);
     }
 
     // ========== ORDER SUBMISSION ==========
