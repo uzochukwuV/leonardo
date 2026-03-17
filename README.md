@@ -111,7 +111,6 @@ npm start
 ```env
 NEXT_PUBLIC_KEEPER_API_URL=http://localhost:3002
 NEXT_PUBLIC_ALEO_NETWORK=testnet
-NEXT_PUBLIC_CONTRACT_PROGRAM_ADDRESS=aleo1...  # Required for buy orders
 ```
 
 #### Keeper (.env)
@@ -119,8 +118,18 @@ NEXT_PUBLIC_CONTRACT_PROGRAM_ADDRESS=aleo1...  # Required for buy orders
 PRIVATE_KEY=APrivateKey1zkp...     # Keeper wallet
 PROVABLE_API_KEY=your-api-key
 PROVABLE_CONSUMER_ID=your-id
-ORDERBOOK_PROGRAM=private_orderbook_v17.aleo
+ORDERBOOK_PROGRAM=private_orderbook_v19.aleo
+SCANNER_START_BLOCK=15040000       # Block to start scanning from
 ```
+
+### Keeper API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Keeper status and connectivity |
+| `GET /api/stats` | Aggregated trading statistics |
+| `GET /api/pairs` | Best bid/ask prices per pair |
+| `GET /api/pairs/:pairId` | Specific pair price info |
 
 ## Project Structure
 
@@ -136,11 +145,21 @@ leonardo/
 |   +-- README.md
 +-- sl/                    # Smart contract
 |   +-- src/main.leo       # Contract source
-|   +-- demo_v17.sh        # Demo script
+|   +-- demo_v17.sh        # Demo script (v19)
 +-- README.md
 ```
 
-## Smart Contract (v17)
+## Smart Contract (v19)
+
+### v2 Milestone - Dynamic Pairs & Enhanced Keeper
+
+**v19 Improvements:**
+- **Dynamic Trading Pairs**: Pairs are loaded from on-chain `token_pairs` mapping
+- **Open Pair Registration**: Anyone can register new trading pairs (no orchestrator restriction)
+- **Pair Enumeration**: Query all pairs via `pair_count` and `pair_ids` mappings
+- **Enhanced TokenPair**: Now includes `base_token_id` for any-to-any token trading
+- **Best Price API**: Keeper exposes best bid/ask per pair for optimal order placement
+- **Manual Token ID Input**: Create pairs with custom token IDs (not just from dropdown)
 
 ### Record Types
 
@@ -152,12 +171,16 @@ leonardo/
 | CancellationRequest | Keeper | Request to cancel |
 | CancellationProof | Trader | Proof of cancellation |
 
-### Supported Token Pairs
+### Token Pairs (Dynamic)
 
-- ALEO/USDC (Pair 1)
-- ALEO/TKNB (Pair 2) - Active on testnet
-- ALEO/TKNA (Pair 3) - Active on testnet
-- TKNA/TKNB (Pair 4) - Active on testnet
+Pairs are now loaded dynamically from the blockchain. Users can:
+1. Browse existing pairs via the trading dashboard
+2. Create new pairs via the Create Pair page
+3. Use any token registered on `token_registry.aleo`
+
+**Default Test Pairs:**
+- ALEO/TKNB - Native ALEO to Test Token B
+- Any pair registered by users
 
 ## Why Privacy Matters
 
