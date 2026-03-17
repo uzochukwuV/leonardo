@@ -67,7 +67,7 @@ export function OrderPlacementForm({
     loadingOrchestrator,
   } = useSubmitOrder();
 
-  const { balances, loading: loadingBalances, refresh: refreshBalances } = useTokenBalances();
+  const { refresh: refreshBalances } = useTokenBalances();
 
   const submitting = step !== 'idle' && step !== 'done';
   const success = step === 'done';
@@ -92,31 +92,43 @@ export function OrderPlacementForm({
   const price = parseFloat(limitPrice) || 0;
   const qty = parseFloat(quantity) || 0;
 
-  // Check for approval requirement (skip if approval just completed)
+  // Determine if approval is needed for buy orders
+  // Always require approval for buy orders with non-native quote tokens (no allowance checking)
   useEffect(() => {
-    // If approval was just completed, don't reset needsApproval
+    // If approval was just completed, don't require it again
     if (approvalCompleted) {
       setNeedsApproval(false);
       return;
     }
 
-    if (!connected || !pair || !isBuy || loadingBalances || !address) {
+    // Basic validation
+    if (!connected || !pair || !address) {
       setNeedsApproval(false);
       return;
     }
 
-    const quoteToken = balances.find(b => b.token.tokenId === pair.quoteToken.tokenId);
-    const quantityRaw = BigInt(Math.floor(qty * Math.pow(10, pair.baseToken.decimals)));
-    const priceBps = BigInt(priceToBasisPoints(price));
-    const requiredEscrow = calculateEscrowAmount(isBuy, quantityRaw, priceBps);
-
-    if (requiredEscrow > 0n) {
-      const allowance = quoteToken?.allowances?.[config.CONTRACT_PROGRAM_ID] || 0n;
-      setNeedsApproval(allowance < requiredEscrow);
-    } else {
+    // Sell orders don't need token approval (they escrow base token directly)
+    if (!isBuy) {
       setNeedsApproval(false);
+      return;
     }
-  }, [isBuy, qty, price, connected, pair, balances, loadingBalances, address, approvalCompleted]);
+
+    // For buy orders, check if quote token is native ALEO (no approval needed)
+    const isNativeQuote = pair.quoteToken.tokenId === '0field';
+    if (isNativeQuote) {
+      setNeedsApproval(false);
+      return;
+    }
+
+    // Need valid quantity and price to proceed
+    if (qty <= 0 || price <= 0) {
+      setNeedsApproval(false);
+      return;
+    }
+
+    // For buy orders with non-native quote tokens, always require approval first
+    setNeedsApproval(true);
+  }, [isBuy, qty, price, connected, pair, address, approvalCompleted]);
 
   // Reset approval state when side or pair changes
   const resetFormState = useCallback(() => {
@@ -217,7 +229,7 @@ export function OrderPlacementForm({
         </span>
       );
     }
-    if (loadingOrchestrator || loadingBalances) {
+    if (loadingOrchestrator) {
       return (
         <span className="flex items-center gap-2 justify-center">
           <Loader2 className="w-4 h-4 animate-spin" />
@@ -545,7 +557,7 @@ export function OrderPlacementForm({
           <form onSubmit={showApprovalButton ? handleApprove : handleSubmit}>
             <Button
               type="submit"
-              disabled={!canSubmit || submitting || (isBuy && loadingBalances) || !pair.isActive}
+              disabled={!canSubmit || submitting || !pair.isActive}
               className={`w-full font-bold py-3 transition-all ${
                 isBuy
                   ? 'bg-primary hover:bg-primary/90 text-primary-foreground'

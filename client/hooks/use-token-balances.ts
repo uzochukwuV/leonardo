@@ -134,6 +134,32 @@ export function useTokenBalances() {
       
 
 
+      // Fetch allowances for quote tokens (needed for buy orders)
+      // Allowance mapping key: hash of (token_id, owner, spender)
+      // For simplicity, we fetch allowance for the orderbook contract
+      for (const token of tokensToFetch) {
+        if (token.isNative) continue; // Native ALEO doesn't use token_registry
+
+        try {
+          // ARC-21 allowance mapping: allowances[token_id][owner][spender] -> amount
+          // The key format depends on how the token_registry stores it
+          // Common format: composite key or nested mapping
+          const allowanceKey = `${token.tokenId}_${address}_${config.CONTRACT_PROGRAM_ID}`;
+          const rawAllowance = await fetchMappingValue(
+            config.TOKEN_REGISTRY_PROGRAM,
+            'allowances',
+            allowanceKey
+          );
+
+          if (rawAllowance) {
+            newBalances[token.symbol].allowances[config.CONTRACT_PROGRAM_ID] = parseU128(rawAllowance);
+          }
+        } catch (err) {
+          // Allowance fetch failed, assume 0
+          console.debug(`Failed to fetch allowance for ${token.symbol}:`, err);
+        }
+      }
+
       // Finalize formatting
       const finalBalances = Object.values(newBalances).map(b => ({
         ...b,
