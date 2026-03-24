@@ -6,11 +6,17 @@
   "leo": "3.4.0",
   "dependencies": [
     {
-      "name": "token_registry.aleo",
+        "name": "token_registry.aleo",
+        "location": "network",
+        "path": null,
+        "edition": 1
+    },{
+      "name": "test_usdcx_stablecoin.aleo",
       "location": "network",
       "path": null,
       "edition": 1
     }
+      
   ],
   "dev_dependencies": null
 }

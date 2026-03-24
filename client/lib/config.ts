@@ -14,6 +14,10 @@ export const config = {
   TOKEN_REGISTRY_PROGRAM: 'token_registry.aleo',
   CREDITS_PROGRAM: 'credits.aleo',
 
+  // USDCx stablecoin program (bridged USDC)
+  USDCX_PROGRAM: 'test_usdcx_stablecoin.aleo',
+  USDCX_TOKEN_ID: '7000field', // Routing ID for USDCx in pairs
+
   // Network configuration
   NETWORK: 'testnet' as const,
   API_BASE_URL: 'https://api.explorer.provable.com/v1',

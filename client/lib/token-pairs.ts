@@ -102,6 +102,15 @@ export const TOKENS: Record<string, TokenInfo> = {
     icon: '🅱️',
     color: '#4ECDC4',
   },
+  USDCX: {
+    symbol: 'USDCx',
+    name: 'Bridged USDC',
+    decimals: 6,
+    tokenId: '7000field',
+    icon: '💲',
+    color: '#2775CA',
+    programId: 'test_usdcx_stablecoin.aleo',
+  },
 };
 
 // Token pair configurations

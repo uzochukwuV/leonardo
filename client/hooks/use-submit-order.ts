@@ -2,11 +2,13 @@
 
 /**
  * useSubmitOrder
- * Order submission for private_orderbook_v17.aleo
+ * Order submission for private_orderbook_v19.aleo
  *
  * Functions:
- *   submit_buy_order(pair_id, quote_token_id, price, quantity, escrow_quote, timestamp, expires_at, orchestrator_addr)
- *   submit_sell_order(pair_id, quote_token_id, price, quantity, escrow_aleo, timestamp, expires_at, orchestrator_addr)
+ *   submit_buy_order - Buy ALEO with token_registry tokens
+ *   submit_buy_order_usdcx - Buy ALEO with USDCx (quote = 7000field)
+ *   submit_sell_order - Sell ALEO for any quote token
+ *   submit_sell_order_usdcx - Sell USDCx for token_registry tokens (base = USDCx)
  *
  * Returns: (Order, Receipt, Future)
  *   - Order record: owned by orchestrator
@@ -111,16 +113,23 @@ export function useSubmitOrder() {
         const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
 
         setStep('approving');
-        // Approve the orderbook program to spend quote tokens
-        // token_registry.aleo/approve_public(token_id, spender, amount)
+
+        // Determine which program to use for approval based on quote token
+        const isUsdcxQuote = pair.quoteToken.tokenId === config.USDCX_TOKEN_ID;
+        const approvalProgram = isUsdcxQuote
+          ? config.USDCX_PROGRAM
+          : config.TOKEN_REGISTRY_PROGRAM;
+
+        // USDCx uses approve_public(spender, amount) - no token_id
+        // token_registry uses approve_public(token_id, spender, amount)
+        const approvalInputs = isUsdcxQuote
+          ? [config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`]
+          : [pair.quoteToken.tokenId, config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`];
+
         const txId = await execTx({
-          program: config.TOKEN_REGISTRY_PROGRAM,
+          program: approvalProgram,
           function: 'approve_public',
-          inputs: [
-            pair.quoteToken.tokenId,
-            config.CONTRACT_PROGRAM_ID,
-            `${escrowAmount}u128`,
-          ],
+          inputs: approvalInputs,
           fee: config.DEFAULT_FEE,
           privateFee: false,
         });
@@ -183,44 +192,92 @@ export function useSubmitOrder() {
         const timestamp = Math.floor(Date.now() / 1000);
 
         setStep('submitting');
+
+        // Determine token routing
+        const isUsdcxQuote = pair.quoteToken.tokenId === config.USDCX_TOKEN_ID;
+        const isUsdcxBase = pair.baseToken.tokenId === config.USDCX_TOKEN_ID;
+
         if (isBuy) {
-          // BUY ORDER: escrow quote tokens (via token_registry.aleo)
+          // BUY ORDER: escrow quote tokens
           const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
-          orderTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'submit_buy_order',
-            inputs: [
-              `${pairId}u64`,
-              pair.quoteToken.tokenId,
-              `${priceBps}u64`,
-              `${quantityRaw}u128`,
-              `${escrowAmount}u128`,
-              `${timestamp}u32`,
-              `${expiresAt}u32`,
-              orchestratorAddr,
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
+
+          if (isUsdcxQuote) {
+            // Buy ALEO with USDCx
+            orderTxId = await execTx({
+              program: config.CONTRACT_PROGRAM_ID,
+              function: 'submit_buy_order_usdcx',
+              inputs: [
+                `${pairId}u64`,
+                `${priceBps}u64`,
+                `${quantityRaw}u128`,
+                `${escrowAmount}u128`,
+                `${timestamp}u32`,
+                `${expiresAt}u32`,
+                orchestratorAddr,
+              ],
+              fee: config.DEFAULT_FEE,
+              privateFee: false,
+            });
+          } else {
+            // Buy with token_registry tokens
+            orderTxId = await execTx({
+              program: config.CONTRACT_PROGRAM_ID,
+              function: 'submit_buy_order',
+              inputs: [
+                `${pairId}u64`,
+                pair.quoteToken.tokenId,
+                `${priceBps}u64`,
+                `${quantityRaw}u128`,
+                `${escrowAmount}u128`,
+                `${timestamp}u32`,
+                `${expiresAt}u32`,
+                orchestratorAddr,
+              ],
+              fee: config.DEFAULT_FEE,
+              privateFee: false,
+            });
+          }
         } else {
-          // SELL ORDER: escrow ALEO (via credits.aleo)
+          // SELL ORDER: escrow base tokens
           const escrowAmount = quantityRaw;
-          orderTxId = await execTx({
-            program: config.CONTRACT_PROGRAM_ID,
-            function: 'submit_sell_order',
-            inputs: [
-              `${pairId}u64`,
-              pair.quoteToken.tokenId,
-              `${priceBps}u64`,
-              `${quantityRaw}u128`,
-              `${Number(escrowAmount)}u64`,
-              `${timestamp}u32`,
-              `${expiresAt}u32`,
-              orchestratorAddr,
-            ],
-            fee: config.DEFAULT_FEE,
-            privateFee: false,
-          });
+
+          if (isUsdcxBase) {
+            // Sell USDCx for quote tokens
+            orderTxId = await execTx({
+              program: config.CONTRACT_PROGRAM_ID,
+              function: 'submit_sell_order_usdcx',
+              inputs: [
+                `${pairId}u64`,
+                pair.quoteToken.tokenId,
+                `${priceBps}u64`,
+                `${quantityRaw}u128`,
+                `${escrowAmount}u128`,
+                `${timestamp}u32`,
+                `${expiresAt}u32`,
+                orchestratorAddr,
+              ],
+              fee: config.DEFAULT_FEE,
+              privateFee: false,
+            });
+          } else {
+            // Sell ALEO for quote tokens
+            orderTxId = await execTx({
+              program: config.CONTRACT_PROGRAM_ID,
+              function: 'submit_sell_order',
+              inputs: [
+                `${pairId}u64`,
+                pair.quoteToken.tokenId,
+                `${priceBps}u64`,
+                `${quantityRaw}u128`,
+                `${Number(escrowAmount)}u64`,
+                `${timestamp}u32`,
+                `${expiresAt}u32`,
+                orchestratorAddr,
+              ],
+              fee: config.DEFAULT_FEE,
+              privateFee: false,
+            });
+          }
         }
 
         setStep('polling-order');

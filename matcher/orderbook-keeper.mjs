@@ -47,6 +47,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, '.keeper-state.json');
 const SNARKOS = process.env.SNARKOS_PATH || 'snarkos';
 
+// USDCx routing: when token_id == 7000field, use USDCx-specific functions
+const USDCX_TOKEN_ID = '7000field';
+
 const CONFIG = {
   privateKey:         process.env.PRIVATE_KEY || '',
   provableApiKey:     process.env.PROVABLE_API_KEY || process.env.RSS_API_KEY || '',
@@ -425,6 +428,20 @@ async function settleMatch(buyOrder, sellOrder) {
       return false;
     }
 
+    // Determine which settlement function to use based on token IDs
+    // - settle_match: ALEO base, token_registry quote
+    // - settle_match_usdcx: ALEO base, USDCx quote (7000field)
+    // - settle_match_usdcx_base: USDCx base, token_registry quote
+    const isUsdcxQuote = buyOrder.quoteTokenId === USDCX_TOKEN_ID;
+    // Note: For USDCx base detection, we'd need to check pair's base_token_id
+    // For now, we detect based on quote token since most pairs are ALEO/X
+
+    let settleFn = 'settle_match';
+    if (isUsdcxQuote) {
+      settleFn = 'settle_match_usdcx';
+      log('SETTLE', 'Using settle_match_usdcx (USDCx quote token)');
+    }
+
     const cmd = [
       `${SNARKOS} developer execute`,
       `--private-key "${CONFIG.privateKey}"`,
@@ -432,7 +449,7 @@ async function settleMatch(buyOrder, sellOrder) {
       `--broadcast "${CONFIG.broadcastEndpoint}"`,
       `--network ${CONFIG.networkId}`,
       CONFIG.programId,
-      'settle_match',
+      settleFn,
       `"${buyOrder.plaintext}"`,
       `"${sellOrder.plaintext}"`,
       `${fillQuantity}u128`,
@@ -441,7 +458,7 @@ async function settleMatch(buyOrder, sellOrder) {
       treasuryAddr,
     ].join(' ');
 
-    log('SETTLE', 'Executing settle_match via snarkos...');
+    log('SETTLE', `Executing ${settleFn} via snarkos...`);
     const output = execSync(cmd + ' 2>&1', { timeout: 300000, encoding: 'utf8' });
     const txId = output.match(/at1[a-z0-9]{58}/)?.[0] || 'unknown';
 
@@ -478,6 +495,171 @@ async function settleMatch(buyOrder, sellOrder) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CROSS-PAIR SETTLEMENT
+// Atomic settlement across two pairs via USDCx bridge
+// User sells ALEO → receives target token (e.g., TKNB)
+// via ALEO/USDCx + TKNB/USDCx pairs
+// ═══════════════════════════════════════════════════════════════
+
+async function settleCrossPair(userSellOrder, cp1BuyOrder, cp2SellOrder, leg2BaseTokenId) {
+  // User sells base token (ALEO) on leg1, receives base token (TKNB) from leg2
+  // CP1 buys ALEO with USDCx on leg1
+  // CP2 sells TKNB for USDCx on leg2
+
+  const leg1FillQty = (() => {
+    const userRemaining = userSellOrder.quantity - userSellOrder.filled;
+    const cp1Remaining = cp1BuyOrder.quantity - cp1BuyOrder.filled;
+    return userRemaining < cp1Remaining ? userRemaining : cp1Remaining;
+  })();
+
+  const leg1Price = (userSellOrder.price + cp1BuyOrder.price) / 2n;
+
+  // Calculate USDCx bridged (after fees)
+  const usdcxFromLeg1 = (leg1FillQty * leg1Price) / 10000n;
+  const settlerFeeBps = 10n; // 0.10%
+  const protocolFeeBps = 5n; // 0.05%
+  const settlerFee = (usdcxFromLeg1 * settlerFeeBps) / 10000n;
+  const protocolFee = (usdcxFromLeg1 * protocolFeeBps) / 10000n;
+  const bridgeAmount = usdcxFromLeg1 - settlerFee - protocolFee;
+
+  // Calculate leg2 fill quantity based on bridge amount and CP2's price
+  // bridgeAmount = (leg2FillQty * leg2Price) / 10000
+  // leg2FillQty = (bridgeAmount * 10000) / leg2Price
+  const leg2Price = cp2SellOrder.price;
+  const leg2FillQty = (bridgeAmount * 10000n) / leg2Price;
+
+  // Validate CP2 has enough
+  const cp2Remaining = cp2SellOrder.quantity - cp2SellOrder.filled;
+  if (leg2FillQty > cp2Remaining) {
+    log('CROSS', `CP2 doesn't have enough quantity (need ${leg2FillQty}, have ${cp2Remaining})`);
+    return false;
+  }
+
+  if (leg2FillQty <= 0n) {
+    log('CROSS', `Invalid leg2 fill quantity: ${leg2FillQty}`);
+    return false;
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+
+  log('CROSS', `Settling cross-pair match:`);
+  log('CROSS', `  User sells: ${leg1FillQty} @ ${leg1Price} (pair ${userSellOrder.pairId})`);
+  log('CROSS', `  CP1 buys: ALEO with ${usdcxFromLeg1} USDCx`);
+  log('CROSS', `  CP2 sells: ${leg2FillQty} @ ${leg2Price} (pair ${cp2SellOrder.pairId})`);
+  log('CROSS', `  Bridge: ${bridgeAmount} USDCx (fees: ${settlerFee} settler, ${protocolFee} protocol)`);
+  log('CROSS', `  User receives: ${leg2FillQty} of token ${leg2BaseTokenId}`);
+
+  if (!userSellOrder.plaintext || !cp1BuyOrder.plaintext || !cp2SellOrder.plaintext) {
+    err('CROSS', 'Missing plaintext - cannot settle');
+    return false;
+  }
+
+  try {
+    let treasuryAddr = process.env.TREASURY_ADDR;
+    if (!treasuryAddr) {
+      const treasuryRaw = await getMapping(CONFIG.programId, 'treasury', 'true');
+      if (treasuryRaw && treasuryRaw !== 'null') {
+        const addrMatch = treasuryRaw.match(/aleo1[a-z0-9]+/);
+        if (addrMatch) treasuryAddr = addrMatch[0];
+      }
+    }
+
+    if (!treasuryAddr) {
+      err('CROSS', 'Treasury address not found');
+      return false;
+    }
+
+    const cmd = [
+      `${SNARKOS} developer execute`,
+      `--private-key "${CONFIG.privateKey}"`,
+      `--query "${CONFIG.queryEndpoint}"`,
+      `--broadcast "${CONFIG.broadcastEndpoint}"`,
+      `--network ${CONFIG.networkId}`,
+      CONFIG.programId,
+      'settle_cross_pair',
+      `"${userSellOrder.plaintext}"`,
+      `"${cp1BuyOrder.plaintext}"`,
+      `"${cp2SellOrder.plaintext}"`,
+      `${leg1FillQty}u128`,
+      `${leg1Price}u64`,
+      `${leg2FillQty}u128`,
+      `${leg2Price}u64`,
+      leg2BaseTokenId,
+      `${timestamp}u32`,
+      treasuryAddr,
+    ].join(' ');
+
+    log('CROSS', `Executing settle_cross_pair via snarkos...`);
+    const output = execSync(cmd + ' 2>&1', { timeout: 300000, encoding: 'utf8' });
+    const txId = output.match(/at1[a-z0-9]{58}/)?.[0] || 'unknown';
+
+    log('CROSS', `Cross-pair settlement successful! TX: ${txId}`);
+
+    // Record trade
+    recentTrades.unshift({
+      type: 'cross_pair',
+      userOrderId: userSellOrder.orderId,
+      cp1OrderId: cp1BuyOrder.orderId,
+      cp2OrderId: cp2SellOrder.orderId,
+      leg1Quantity: leg1FillQty.toString(),
+      leg1Price: leg1Price.toString(),
+      leg2Quantity: leg2FillQty.toString(),
+      leg2Price: leg2Price.toString(),
+      bridgeAmount: bridgeAmount.toString(),
+      timestamp: new Date().toISOString(),
+      txId,
+    });
+    if (recentTrades.length > MAX_TRADES) recentTrades.pop();
+
+    // Mark as settled if fully filled
+    const userRemaining = userSellOrder.quantity - userSellOrder.filled;
+    const cp1Remaining = cp1BuyOrder.quantity - cp1BuyOrder.filled;
+    const cp2RemainingAfter = cp2Remaining - leg2FillQty;
+
+    if (leg1FillQty >= userRemaining) {
+      settledOrderIds.add(userSellOrder.orderId);
+    }
+    if (leg1FillQty >= cp1Remaining) {
+      settledOrderIds.add(cp1BuyOrder.orderId);
+    }
+    if (cp2RemainingAfter <= 0n) {
+      settledOrderIds.add(cp2SellOrder.orderId);
+    }
+    saveState();
+
+    return true;
+  } catch (e) {
+    const msg = (e.stdout || '') + (e.stderr || '') || e.message;
+    err('CROSS', `Failed: ${msg.substring(0, 400)}`);
+    return false;
+  }
+}
+
+// Helper to fetch pair info from chain
+async function getPairInfo(pairId) {
+  try {
+    const raw = await getMapping(CONFIG.programId, 'token_pairs', `${pairId}u64`);
+    if (!raw || raw === 'null') return null;
+
+    // Parse the TokenPair struct from mapping response
+    // Format: { base_token_id: 0field, quote_token_id: 7000field, tick_size: 100u64, is_active: true }
+    const baseMatch = raw.match(/base_token_id:\s*([^\s,}]+)/);
+    const quoteMatch = raw.match(/quote_token_id:\s*([^\s,}]+)/);
+    const isActiveMatch = raw.match(/is_active:\s*(true|false)/);
+
+    return {
+      pairId,
+      baseTokenId: baseMatch ? baseMatch[1] : null,
+      quoteTokenId: quoteMatch ? quoteMatch[1] : null,
+      isActive: isActiveMatch ? isActiveMatch[1] === 'true' : false,
+    };
+  } catch (e) {
+    err('PAIR', `Failed to get pair ${pairId}: ${e.message}`);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // CANCELLATION
 // ═══════════════════════════════════════════════════════════════
 
@@ -489,9 +671,26 @@ async function processCancellation(cancellation) {
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
-  const cancelFn = order.isBuy ? 'cancel_buy_order' : 'cancel_sell_order';
 
-  log('CANCEL', `Processing cancellation for ${order.isBuy ? 'buy' : 'sell'} order: ${order.orderId.substring(0, 20)}...`);
+  // Determine which cancel function to use based on token IDs
+  // - cancel_buy_order: Refund token_registry tokens
+  // - cancel_buy_order_usdcx: Refund USDCx (quote token)
+  // - cancel_sell_order: Refund ALEO (base token)
+  // - cancel_sell_order_usdcx: Refund USDCx (base token)
+  let cancelFn;
+  if (order.isBuy) {
+    // Buy order: refund quote token
+    cancelFn = order.quoteTokenId === USDCX_TOKEN_ID
+      ? 'cancel_buy_order_usdcx'
+      : 'cancel_buy_order';
+  } else {
+    // Sell order: refund base token
+    // For USDCx base, we'd need pair info; for now assume ALEO base unless explicitly marked
+    // TODO: Add baseTokenId to order parsing for proper routing
+    cancelFn = 'cancel_sell_order';
+  }
+
+  log('CANCEL', `Processing cancellation for ${order.isBuy ? 'buy' : 'sell'} order using ${cancelFn}: ${order.orderId.substring(0, 20)}...`);
 
   if (!order.plaintext || !cancellation.plaintext) {
     err('CANCEL', 'Missing plaintext - cannot cancel');
