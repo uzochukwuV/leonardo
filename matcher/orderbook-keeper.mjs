@@ -859,6 +859,99 @@ async function scanAndProcess() {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // CROSS-PAIR MATCHING
+    // Look for cross-pair swap opportunities via USDCx bridge
+    // User sells on leg1 (e.g., ALEO/USDCx) → receives from leg2 (e.g., TKNB/USDCx)
+    // ═══════════════════════════════════════════════════════════════
+
+    // Find all USDCx pairs (quote_token_id === 7000field)
+    const usdcxPairs = [];
+    for (const [pairKey, orders] of ordersByPair) {
+      const sampleOrder = orders.buys[0] || orders.sells[0];
+      if (sampleOrder && sampleOrder.quoteTokenId === USDCX_TOKEN_ID) {
+        usdcxPairs.push({ pairKey, pairId: BigInt(pairKey), orders });
+      }
+    }
+
+    if (usdcxPairs.length >= 2) {
+      log('CROSS', `Found ${usdcxPairs.length} USDCx pairs - checking for cross-pair opportunities`);
+
+      // For each pair, look for sell orders that could be cross-pair matched
+      for (const leg1 of usdcxPairs) {
+        for (const leg2 of usdcxPairs) {
+          // Don't match a pair with itself
+          if (leg1.pairKey === leg2.pairKey) continue;
+
+          // For each sell order on leg1
+          for (const userSellOrder of leg1.orders.sells) {
+            const userRemaining = userSellOrder.quantity - userSellOrder.filled;
+            if (userRemaining <= 0n) continue;
+
+            // Find a matching buy order on leg1 (counterparty 1)
+            for (const cp1BuyOrder of leg1.orders.buys) {
+              // Check price crossing
+              if (cp1BuyOrder.price < userSellOrder.price) continue;
+
+              const cp1Remaining = cp1BuyOrder.quantity - cp1BuyOrder.filled;
+              if (cp1Remaining <= 0n) continue;
+
+              // Find a matching sell order on leg2 (counterparty 2)
+              for (const cp2SellOrder of leg2.orders.sells) {
+                const cp2Remaining = cp2SellOrder.quantity - cp2SellOrder.filled;
+                if (cp2Remaining <= 0n) continue;
+
+                // Calculate if the cross-pair trade is viable
+                const leg1FillQty = userRemaining < cp1Remaining ? userRemaining : cp1Remaining;
+                const leg1Price = (userSellOrder.price + cp1BuyOrder.price) / 2n;
+                const usdcxFromLeg1 = (leg1FillQty * leg1Price) / 10000n;
+
+                // Deduct fees from bridge amount
+                const settlerFee = (usdcxFromLeg1 * 10n) / 10000n;
+                const protocolFee = (usdcxFromLeg1 * 5n) / 10000n;
+                const bridgeAmount = usdcxFromLeg1 - settlerFee - protocolFee;
+
+                // Calculate how much leg2 base token user can get
+                const leg2Price = cp2SellOrder.price;
+                if (leg2Price <= 0n) continue;
+
+                const leg2FillQty = (bridgeAmount * 10000n) / leg2Price;
+
+                // Check if CP2 has enough
+                if (leg2FillQty <= 0n || leg2FillQty > cp2Remaining) continue;
+
+                // We found a valid cross-pair match!
+                log('CROSS', `Found cross-pair opportunity:`);
+                log('CROSS', `  Leg1 (pair ${leg1.pairKey}): User sell @ ${userSellOrder.price} ↔ CP1 buy @ ${cp1BuyOrder.price}`);
+                log('CROSS', `  Leg2 (pair ${leg2.pairKey}): CP2 sell @ ${cp2SellOrder.price}`);
+                log('CROSS', `  Bridge: ${bridgeAmount} USDCx → ${leg2FillQty} tokens`);
+
+                // Get leg2 pair info to determine base token
+                const leg2PairInfo = await getPairInfo(leg2.pairId);
+                if (!leg2PairInfo || !leg2PairInfo.baseTokenId) {
+                  err('CROSS', `Could not get pair info for leg2 (pair ${leg2.pairKey})`);
+                  continue;
+                }
+
+                const success = await settleCrossPair(
+                  userSellOrder,
+                  cp1BuyOrder,
+                  cp2SellOrder,
+                  leg2PairInfo.baseTokenId
+                );
+
+                if (success) {
+                  matchCount++;
+                  log('CROSS', `Cross-pair match successful!`);
+                  await new Promise(r => setTimeout(r, 5000));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     log('SCAN', `Order book total: ${totalBids} bids, ${totalAsks} asks across ${ordersByPair.size} pair(s)`);
 
     // Fetch and process cancellation requests

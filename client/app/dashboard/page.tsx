@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Header } from '@/components/header';
 import { OrderPlacementForm } from '@/components/order-placement-form';
 import { UserOrders } from '@/components/user-orders';
+import { CrossPairInfo } from '@/components/cross-pair-info';
 import { useTradingPairs } from '@/hooks/use-trading-pairs';
 
 export default function Dashboard() {
@@ -35,13 +36,15 @@ export default function Dashboard() {
         {/* Main layout: order form left, user orders right */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Order Placement */}
-          <div>
+          <div className="space-y-6">
             <OrderPlacementForm
               pairs={pairs}
               selectedPairId={selectedPairId ?? 0}
               onPairChange={setSelectedPairId}
               loadingPairs={loadingPairs}
             />
+            {/* Cross-Pair Swap Estimator */}
+            <CrossPairInfo />
           </div>
 
           {/* User's Orders (Receipts) */}
