@@ -4,16 +4,14 @@ import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { Button } from '@/components/ui/button';
 import { X, TrendingUp, TrendingDown, RotateCw, Loader2, Clock } from 'lucide-react';
 import { useUserOrders, type ParsedOrder } from '@/hooks/use-user-orders';
-import { useCancelOrder } from '@/hooks/use-cancel-order';
 import { useState } from 'react';
 import { getTokenPair } from '@/lib/token-pairs';
 
 export function UserOrders() {
   const { address, connected } = useWallet();
-  const { orders, loading, error: loadError, refresh } = useUserOrders();
-  const { cancelOrder, step, stepLabel, error: cancelHookError, reset } = useCancelOrder();
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
-  const [cancelError, setCancelError] = useState<string | null>(null);
+   const { orders, loading, error: loadError, refresh } = useUserOrders();
+   const [cancellingId, setCancellingId] = useState<string | null>(null);
+   const [cancelError, setCancelError] = useState<string | null>(null);
 
   if (!connected || !address) {
     return (
@@ -23,64 +21,37 @@ export function UserOrders() {
     );
   }
 
-  const handleCancel = async (order: ParsedOrder) => {
-    setCancelError(null);
-    reset();
-    setCancellingId(order.recordId);
+   const handleCancel = async (order: ParsedOrder) => {
+     // Cancellation not supported in private_matching_orderbook_v1.aleo
+     setCancelError('Order cancellation is not supported in the current version');
+   };
 
-    // v17: Use the Receipt record ciphertext for cancellation
-    if (!order.receiptCiphertext) {
-      setCancelError('Receipt record not found - cannot cancel');
-      setCancellingId(null);
-      return;
-    }
+   const error = loadError ?? cancelError;
+   const isCancelling = false; // Always false since cancellation is removed
 
-    const ok = await cancelOrder({
-      receiptRecord: order.receiptCiphertext,
-      orderId: order.orderId,
-      isBuy: order.side === 'buy',
-    });
+   return (
+     <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
+       <div className="flex items-center justify-between mb-6">
+         <h2 className="text-base sm:text-lg font-bold text-foreground">
+           My Orders
+         </h2>
+         <Button
+           onClick={refresh}
+           disabled={loading}
+           size="sm"
+           variant="outline"
+           className="gap-2 bg-transparent"
+         >
+           <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+           {loading ? 'Loading...' : 'Refresh'}
+         </Button>
+       </div>
 
-    setCancellingId(null);
-    if (ok) {
-      refresh();
-    } else {
-      setCancelError(cancelHookError ?? 'Cancel request failed — check your wallet and try again');
-    }
-  };
-
-  const error = loadError ?? cancelError;
-  const isCancelling = step !== 'idle' && step !== 'done';
-
-  return (
-    <div className="rounded-lg border border-border bg-card p-4 sm:p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-base sm:text-lg font-bold text-foreground">
-          My Orders
-        </h2>
-        <Button
-          onClick={refresh}
-          disabled={loading}
-          size="sm"
-          variant="outline"
-          className="gap-2 bg-transparent"
-        >
-          <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          {loading ? 'Loading...' : 'Refresh'}
-        </Button>
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/30">
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
-      {isCancelling && cancellingId && (
-        <div className="mb-4 p-3 rounded-lg bg-primary/10 border border-primary/30">
-          <p className="text-sm text-primary">{stepLabel[step]}</p>
-        </div>
-      )}
+       {error && (
+         <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+           <p className="text-sm text-destructive">{error}</p>
+         </div>
+       )}
 
       {loading && orders.length === 0 ? (
         <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
@@ -123,13 +94,13 @@ export function UserOrders() {
         </>
       )}
 
-      <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/20">
-        <p className="text-xs text-foreground leading-relaxed">
-          <span className="font-semibold">v17 Architecture:</span> Your Receipt records prove order
-          ownership. To cancel, submit a cancellation request and the keeper will process the refund.
-          Orders are settled by the keeper when prices cross.
-        </p>
-      </div>
+       <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/20">
+         <p className="text-xs text-foreground leading-relaxed">
+           <span className="font-semibold">Current Architecture:</span> Your Receipt records prove order
+           ownership. Order cancellation is not supported in this version.
+           Orders are settled by the keeper when prices cross.
+         </p>
+       </div>
     </div>
   );
 }

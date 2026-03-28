@@ -4,13 +4,14 @@
  * useUserRecords
  *
  * This hook is responsible for fetching and managing user-specific records from
- * the private_orderbook_v17.aleo smart contract. It uses the Record Scanning
+ * the private_matching_orderbook_v1.aleo smart contract. It uses the Record Scanning
  * Service (RSS) to efficiently find records owned by the connected user.
  *
- * It scans for three types of records:
- *  - Receipt: Proof of a submitted order.
- *  - SettlementProof: Proof of a filled order (a trade).
- *  - CancellationProof: Proof of a cancelled order.
+ * It scans for two types of records:
+ *   - Receipt: Proof of a submitted order.
+ *   - SettlementProof: Proof of a filled order (a trade).
+ *
+ * Note: CancellationProof records are no longer supported in this version.
  *
  * The hook provides separate lists for each type of record, along with a
  * loading state and a function to manually refresh the data.
@@ -45,20 +46,19 @@ export interface SettlementProofRecord {
 }
 
 export interface CancellationProofRecord {
-  owner: string;
-  order_id: string;
-  is_buy: boolean;
-  returned_amount: string;
-  cancelled_at: string;
-}
+   owner: string;
+   order_id: string;
+   is_buy: boolean;
+   returned_amount: string;
+   cancelled_at: string;
+ }
 
 export function useUserRecords() {
-  const { address, connected, wallet } = useWallet() as any;
-  const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
-  const [settlements, setSettlements] = useState<SettlementProofRecord[]>([]);
-  const [cancellations, setCancellations] = useState<CancellationProofRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+   const { address, connected, wallet } = useWallet() as any;
+   const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
+   const [settlements, setSettlements] = useState<SettlementProofRecord[]>([]);
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
 
   const parseRecord = (record: any) => {
     // The RSS might return fields with 'u128', 'u64' suffixes.
@@ -77,7 +77,6 @@ export function useUserRecords() {
     if (!connected || !address || !wallet?.adapter?.getViewKey) {
       setReceipts([]);
       setSettlements([]);
-      setCancellations([]);
       return;
     }
 
@@ -93,38 +92,32 @@ export function useUserRecords() {
       // Fetch all records for the contract
       const allRecords = await wallet.adapter.requestRecords(config.CONTRACT_PROGRAM_ID, false);
 
-      const newReceipts: ReceiptRecord[] = [];
-      const newSettlements: SettlementProofRecord[] = [];
-      const newCancellations: CancellationProofRecord[] = [];
+       const newReceipts: ReceiptRecord[] = [];
+       const newSettlements: SettlementProofRecord[] = [];
 
-      for (const record of allRecords) {
-        if (!record.program_id || record.program_id !== config.CONTRACT_PROGRAM_ID) {
-          continue;
-        }
+       for (const record of allRecords) {
+         if (!record.program_id || record.program_id !== config.CONTRACT_PROGRAM_ID) {
+           continue;
+         }
 
-        const parsedData = parseRecord(record);
-        if (!parsedData) continue;
+         const parsedData = parseRecord(record);
+         if (!parsedData) continue;
 
-        // The record 'name' might be available in record.name or determined by its structure
-        // Assuming the RSS provides a 'name' field for the record type.
-        // If not, we might need to check for unique fields in each record type.
-        if (record.name === 'Receipt') {
-          newReceipts.push(parsedData as ReceiptRecord);
-        } else if (record.name === 'SettlementProof') {
-          newSettlements.push(parsedData as SettlementProofRecord);
-        } else if (record.name === 'CancellationProof') {
-          newCancellations.push(parsedData as CancellationProofRecord);
-        }
-      }
+         // The record 'name' might be available in record.name or determined by its structure
+         // Assuming the RSS provides a 'name' field for the record type.
+         // If not, we might need to check for unique fields in each record type.
+         if (record.name === 'Receipt') {
+           newReceipts.push(parsedData as ReceiptRecord);
+         } else if (record.name === 'SettlementProof') {
+           newSettlements.push(parsedData as SettlementProofRecord);
+         }
+       }
 
       // Sort records by time (most recent first)
       newReceipts.sort((a, b) => parseInt(b.created_at) - parseInt(a.created_at));
       newSettlements.sort((a, b) => parseInt(b.settled_at) - parseInt(a.settled_at));
-      newCancellations.sort((a, b) => parseInt(b.cancelled_at) - parseInt(a.cancelled_at));
-
-      setReceipts(newReceipts);
-      setSettlements(newSettlements);
-      setCancellations(newCancellations);
+       setReceipts(newReceipts);
+       setSettlements(newSettlements);
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
@@ -147,12 +140,11 @@ export function useUserRecords() {
     return () => clearInterval(interval);
   }, [connected, fetchRecords]);
 
-  return {
-    receipts,
-    settlements,
-    cancellations,
-    loading,
-    error,
-    refresh: fetchRecords,
-  };
+   return {
+     receipts,
+     settlements,
+     loading,
+     error,
+     refresh: fetchRecords,
+   };
 }

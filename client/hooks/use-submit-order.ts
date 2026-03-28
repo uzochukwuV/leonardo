@@ -2,12 +2,12 @@
 
 /**
  * useSubmitOrder
- * Order submission for private_orderbook_v19.aleo
+ * Order submission for private_matching_orderbook_v1.aleo
  *
  * Functions:
- *   submit_buy_order - Buy ALEO with token_registry tokens
- *   submit_buy_order_usdcx - Buy ALEO with USDCx (quote = 7000field)
- *   submit_sell_order - Sell ALEO for any quote token
+ *   submit_buy_order - Buy base token with token_registry/USDCx tokens
+ *   submit_buy_order_usdcx - Buy base token with USDCx (quote = 7000field)
+ *   submit_sell_order - Sell base token for token_registry/USDCx tokens
  *   submit_sell_order_usdcx - Sell USDCx for token_registry tokens (base = USDCx)
  *
  * Returns: (Order, Receipt, Future)
@@ -82,222 +82,233 @@ export function useSubmitOrder() {
     setReceipt(null);
   }, []);
 
-  const approveQuoteTokens = useCallback(
-    async (params: SubmitOrderParams): Promise<string | null> => {
-      const { pairId, isBuy, limitPriceUsd, quantity } = params;
+   const approveQuoteTokens = useCallback(
+     async (params: SubmitOrderParams): Promise<string | null> => {
+       const { pairId, isBuy, limitPriceUsd, quantity } = params;
 
-      if (!isBuy) {
-        // Approval is only for buy orders
-        return null;
-      }
+       setError(null);
+       setApprovalTxId(null);
 
-      setError(null);
-      setApprovalTxId(null);
+       if (!connected || !address) {
+         setError('Connect your wallet first');
+         return null;
+       }
 
-      if (!connected || !address) {
-        setError('Connect your wallet first');
-        return null;
-      }
+       const pair = getTokenPair(pairId);
+       if (!pair) {
+         setError('Invalid token pair');
+         return null;
+       }
 
-      const pair = getTokenPair(pairId);
-      if (!pair) {
-        setError('Invalid token pair');
-        return null;
-      }
+       try {
+         const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
+         const quantityRaw = BigInt(
+           Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
+         );
 
-      try {
-        const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
-        const quantityRaw = BigInt(
-          Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
-        );
-        const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
+         // For buy orders: escrow quote tokens
+         // For sell orders: escrow base tokens
+         const isBuyOrder = isBuy;
+         const escrowAmount = calculateEscrowAmount(isBuyOrder, quantityRaw, priceBps);
 
-        setStep('approving');
+         setStep('approving');
 
-        // Determine which program to use for approval based on quote token
-        const isUsdcxQuote = pair.quoteToken.tokenId === config.USDCX_TOKEN_ID;
-        const approvalProgram = isUsdcxQuote
-          ? config.USDCX_PROGRAM
-          : config.TOKEN_REGISTRY_PROGRAM;
+         // Determine which token needs approval and which program to use
+         const needsApproval = !isBuyOrder 
+           ? pair.baseToken.tokenId !== '0field' // sell order: non-native base token needs approval
+           : pair.quoteToken.tokenId !== '0field'; // buy order: non-native quote token needs approval
+         
+         if (!needsApproval) {
+           // Native token (ALEO) doesn't need approval
+           setStep('idle');
+           return null;
+         }
 
-        // USDCx uses approve_public(spender, amount) - no token_id
-        // token_registry uses approve_public(token_id, spender, amount)
-        const approvalInputs = isUsdcxQuote
-          ? [config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`]
-          : [pair.quoteToken.tokenId, config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`];
+         const tokenToApprove = isBuyOrder 
+           ? pair.quoteToken.tokenId 
+           : pair.baseToken.tokenId;
+         const isUsdcxToken = tokenToApprove === config.USDCX_TOKEN_ID;
+         const approvalProgram = isUsdcxToken
+           ? config.USDCX_PROGRAM
+           : config.TOKEN_REGISTRY_PROGRAM;
 
-        const txId = await execTx({
-          program: approvalProgram,
-          function: 'approve_public',
-          inputs: approvalInputs,
-          fee: config.DEFAULT_FEE,
-          privateFee: false,
-        });
+         // USDCx uses approve_public(spender, amount) - no token_id
+         // token_registry uses approve_public(token_id, spender, amount)
+         const approvalInputs = isUsdcxToken
+           ? [config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`]
+           : [tokenToApprove, config.CONTRACT_PROGRAM_ID, `${escrowAmount}u128`];
 
-        setStep('polling-approval');
-        const approvalResult = await pollTx(txId);
-        if (approvalResult.status === 'rejected') {
-          throw new Error('Approval transaction rejected');
-        }
+         const txId = await execTx({
+           program: approvalProgram,
+           function: 'approve_public',
+           inputs: approvalInputs,
+           fee: config.DEFAULT_FEE,
+           privateFee: false,
+         });
 
-        const confirmedId = approvalResult.onChainId;
-        setApprovalTxId(confirmedId);
-        setStep('idle'); // Ready for the next step
-        return confirmedId;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to approve tokens');
-        setStep('idle');
-        return null;
-      }
-    },
-    [connected, address, execTx, pollTx]
-  );
+         setStep('polling-approval');
+         const approvalResult = await pollTx(txId);
+         if (approvalResult.status === 'rejected') {
+           throw new Error('Approval transaction rejected');
+         }
 
-  const submitOrder = useCallback(
-    async (params: SubmitOrderParams): Promise<string | null> => {
-      const {
-        pairId,
-        isBuy,
-        limitPriceUsd,
-        quantity,
-        expiresAt = 0,
-      } = params;
+         const confirmedId = approvalResult.onChainId;
+         setApprovalTxId(confirmedId);
+         setStep('idle'); // Ready for the next step
+         return confirmedId;
+       } catch (err) {
+         setError(err instanceof Error ? err.message : 'Failed to approve tokens');
+         setStep('idle');
+         return null;
+       }
+     },
+     [connected, address, execTx, pollTx]
+   );
 
-      setError(null);
-      setTxId(null);
+   const submitOrder = useCallback(
+     async (params: SubmitOrderParams): Promise<string | null> => {
+       const {
+         pairId,
+         isBuy,
+         limitPriceUsd,
+         quantity,
+         expiresAt = 0,
+       } = params;
 
-      if (!connected || !address) {
-        setError('Connect your wallet first');
-        return null;
-      }
+       setError(null);
+       setTxId(null);
 
-      if (!orchestratorAddr) {
-        setError('Orchestrator address not loaded. Please try again.');
-        return null;
-      }
+       if (!connected || !address) {
+         setError('Connect your wallet first');
+         return null;
+       }
 
-      const pair = getTokenPair(pairId);
-      if (!pair) {
-        setError('Invalid token pair');
-        return null;
-      }
+       if (!orchestratorAddr) {
+         setError('Orchestrator address not loaded. Please try again.');
+         return null;
+       }
 
-      try {
-        const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
-        const quantityRaw = BigInt(
-          Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
-        );
+       const pair = getTokenPair(pairId);
+       if (!pair) {
+         setError('Invalid token pair');
+         return null;
+       }
 
-        let orderTxId: string;
-        const timestamp = Math.floor(Date.now() / 1000);
+       try {
+         const priceBps = BigInt(priceToBasisPoints(limitPriceUsd));
+         const quantityRaw = BigInt(
+           Math.floor(quantity * Math.pow(10, pair.baseToken.decimals))
+         );
 
-        setStep('submitting');
+         let orderTxId: string;
+         const timestamp = Math.floor(Date.now() / 1000);
 
-        // Determine token routing
-        const isUsdcxQuote = pair.quoteToken.tokenId === config.USDCX_TOKEN_ID;
-        const isUsdcxBase = pair.baseToken.tokenId === config.USDCX_TOKEN_ID;
+         setStep('submitting');
 
-        if (isBuy) {
-          // BUY ORDER: escrow quote tokens
-          const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
+         if (isBuy) {
+           // BUY ORDER: escrow quote tokens
+           const escrowAmount = calculateEscrowAmount(true, quantityRaw, priceBps);
 
-          if (isUsdcxQuote) {
-            // Buy ALEO with USDCx
-            orderTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'submit_buy_order_usdcx',
-              inputs: [
-                `${pairId}u64`,
-                `${priceBps}u64`,
-                `${quantityRaw}u128`,
-                `${escrowAmount}u128`,
-                `${timestamp}u32`,
-                `${expiresAt}u32`,
-                orchestratorAddr,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-          } else {
-            // Buy with token_registry tokens
-            orderTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'submit_buy_order',
-              inputs: [
-                `${pairId}u64`,
-                pair.quoteToken.tokenId,
-                `${priceBps}u64`,
-                `${quantityRaw}u128`,
-                `${escrowAmount}u128`,
-                `${timestamp}u32`,
-                `${expiresAt}u32`,
-                orchestratorAddr,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-          }
-        } else {
-          // SELL ORDER: escrow base tokens
-          const escrowAmount = quantityRaw;
+           if (pair.quoteToken.tokenId === config.USDCX_TOKEN_ID) {
+             // Buy base token with USDCx (quote = 7000field)
+             orderTxId = await execTx({
+               program: config.CONTRACT_PROGRAM_ID,
+               function: 'submit_buy_order_usdcx',
+               inputs: [
+                 `${pairId}u64`,
+                 pair.baseToken.tokenId,           // base_token_id (new param)
+                 `${priceBps}u64`,
+                 `${quantityRaw}u128`,
+                 `${escrowAmount}u128`,
+                 `${timestamp}u32`,
+                 `${expiresAt}u32`,
+                 orchestratorAddr,
+               ],
+               fee: config.DEFAULT_FEE,
+               privateFee: false,
+             });
+           } else {
+             // Buy base token with token_registry tokens
+             orderTxId = await execTx({
+               program: config.CONTRACT_PROGRAM_ID,
+               function: 'submit_buy_order',
+               inputs: [
+                 `${pairId}u64`,
+                 pair.baseToken.tokenId,           // base_token_id (new param)
+                 pair.quoteToken.tokenId,
+                 `${priceBps}u64`,
+                 `${quantityRaw}u128`,
+                 `${escrowAmount}u128`,
+                 `${timestamp}u32`,
+                 `${expiresAt}u32`,
+                 orchestratorAddr,
+               ],
+               fee: config.DEFAULT_FEE,
+               privateFee: false,
+             });
+           }
+         } else {
+           // SELL ORDER: escrow base tokens
+           const escrowAmount = quantityRaw;
 
-          if (isUsdcxBase) {
-            // Sell USDCx for quote tokens
-            orderTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'submit_sell_order_usdcx',
-              inputs: [
-                `${pairId}u64`,
-                pair.quoteToken.tokenId,
-                `${priceBps}u64`,
-                `${quantityRaw}u128`,
-                `${escrowAmount}u128`,
-                `${timestamp}u32`,
-                `${expiresAt}u32`,
-                orchestratorAddr,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-          } else {
-            // Sell ALEO for quote tokens
-            orderTxId = await execTx({
-              program: config.CONTRACT_PROGRAM_ID,
-              function: 'submit_sell_order',
-              inputs: [
-                `${pairId}u64`,
-                pair.quoteToken.tokenId,
-                `${priceBps}u64`,
-                `${quantityRaw}u128`,
-                `${Number(escrowAmount)}u64`,
-                `${timestamp}u32`,
-                `${expiresAt}u32`,
-                orchestratorAddr,
-              ],
-              fee: config.DEFAULT_FEE,
-              privateFee: false,
-            });
-          }
-        }
+           if (pair.baseToken.tokenId === config.USDCX_TOKEN_ID) {
+             // Sell USDCx for quote tokens (base = 7000field)
+             orderTxId = await execTx({
+               program: config.CONTRACT_PROGRAM_ID,
+               function: 'submit_sell_order_usdcx',
+               inputs: [
+                 `${pairId}u64`,
+                 pair.quoteToken.tokenId,          // quote_token_id (was base_token_id)
+                 `${priceBps}u64`,
+                 `${quantityRaw}u128`,
+                 `${escrowAmount}u128`,
+                 `${timestamp}u32`,
+                 `${expiresAt}u32`,
+                 orchestratorAddr,
+               ],
+               fee: config.DEFAULT_FEE,
+               privateFee: false,
+             });
+           } else {
+             // Sell base token for token_registry tokens
+             orderTxId = await execTx({
+               program: config.CONTRACT_PROGRAM_ID,
+               function: 'submit_sell_order',
+               inputs: [
+                 `${pairId}u64`,
+                 pair.baseToken.tokenId,           // base_token_id (new param)
+                 pair.quoteToken.tokenId,
+                 `${priceBps}u64`,
+                 `${quantityRaw}u128`,
+                 `${escrowAmount}u128`,            // changed from u64 to u128
+                 `${timestamp}u32`,
+                 `${expiresAt}u32`,
+                 orchestratorAddr,
+               ],
+               fee: config.DEFAULT_FEE,
+               privateFee: false,
+             });
+           }
+         }
 
-        setStep('polling-order');
-        const orderResult = await pollTx(orderTxId);
-        if (orderResult.status === 'rejected') {
-          throw new Error('Order transaction rejected on-chain');
-        }
+         setStep('polling-order');
+         const orderResult = await pollTx(orderTxId);
+         if (orderResult.status === 'rejected') {
+           throw new Error('Order transaction rejected on-chain');
+         }
 
-        const confirmedId = orderResult.onChainId;
-        setTxId(confirmedId);
-        setStep('done');
-        return confirmedId;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to place order');
-        setStep('idle');
-        return null;
-      }
-    },
-    [connected, address, execTx, pollTx, orchestratorAddr]
-  );
+         const confirmedId = orderResult.onChainId;
+         setTxId(confirmedId);
+         setStep('done');
+         return confirmedId;
+       } catch (err) {
+         setError(err instanceof Error ? err.message : 'Failed to place order');
+         setStep('idle');
+         return null;
+       }
+     },
+     [connected, address, execTx, pollTx, orchestratorAddr]
+   );
 
   const stepLabel: Record<SubmitStep, string> = {
     idle: '',

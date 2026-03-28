@@ -8,7 +8,7 @@
  *   import { useTradingPairs, useTradingPair } from '@/hooks/use-trading-pairs';
  *
  * The dynamic hooks:
- *   1. Fetch pair info from private_orderbook_v18.aleo/token_pairs mapping
+ *   1. Fetch pair info from private_matching_orderbook_v1.aleo/token_pairs mapping
  *   2. Fetch token metadata from token_registry.aleo/registered_tokens mapping
  *   3. Combine to create full TradingPair objects with real on-chain data
  *

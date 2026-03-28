@@ -4,7 +4,7 @@ import merkle_tree.aleo;
 import test_usdcx_multisig_core.aleo;
 import test_usdcx_freezelist.aleo;
 import test_usdcx_stablecoin.aleo;
-program private_orderbook_v19.aleo;
+program private_orderbook_v20.aleo;
 
 record Order:
     owner as address.private;
@@ -136,7 +136,7 @@ mapping pair_ids:
 function add_keeper:
     input r0 as address.private;
     async add_keeper self.caller r0 into r1;
-    output r1 as private_orderbook_v19.aleo/add_keeper.future;
+    output r1 as private_orderbook_v20.aleo/add_keeper.future;
 
 finalize add_keeper:
     input r0 as address.public;
@@ -148,7 +148,7 @@ finalize add_keeper:
 function remove_keeper:
     input r0 as address.private;
     async remove_keeper self.caller r0 into r1;
-    output r1 as private_orderbook_v19.aleo/remove_keeper.future;
+    output r1 as private_orderbook_v20.aleo/remove_keeper.future;
 
 finalize remove_keeper:
     input r0 as address.public;
@@ -160,7 +160,7 @@ finalize remove_keeper:
 function set_treasury:
     input r0 as address.private;
     async set_treasury self.caller r0 into r1;
-    output r1 as private_orderbook_v19.aleo/set_treasury.future;
+    output r1 as private_orderbook_v20.aleo/set_treasury.future;
 
 finalize set_treasury:
     input r0 as address.public;
@@ -177,7 +177,7 @@ function register_pair:
     gt r2 0u64 into r3;
     assert.eq r3 true;
     async register_pair r0 r1 r2 into r4;
-    output r4 as private_orderbook_v19.aleo/register_pair.future;
+    output r4 as private_orderbook_v20.aleo/register_pair.future;
 
 finalize register_pair:
     input r0 as field.public;
@@ -196,7 +196,7 @@ finalize register_pair:
 function deactivate_pair:
     input r0 as u64.private;
     async deactivate_pair self.caller r0 into r1;
-    output r1 as private_orderbook_v19.aleo/deactivate_pair.future;
+    output r1 as private_orderbook_v20.aleo/deactivate_pair.future;
 
 finalize deactivate_pair:
     input r0 as address.public;
@@ -210,7 +210,7 @@ finalize deactivate_pair:
 function activate_pair:
     input r0 as u64.private;
     async activate_pair self.caller r0 into r1;
-    output r1 as private_orderbook_v19.aleo/activate_pair.future;
+    output r1 as private_orderbook_v20.aleo/activate_pair.future;
 
 finalize activate_pair:
     input r0 as address.public;
@@ -240,11 +240,11 @@ function submit_buy_order:
     hash.bhp256 r11 into r12 as field;
     cast r7 self.caller r12 r0 true r2 r3 r1 r4 0u128 r5 r6 into r13 as Order.record;
     cast self.caller r12 r0 true r2 r3 r1 r4 r5 into r14 as Receipt.record;
-    call token_registry.aleo/transfer_public_as_signer r1 private_orderbook_v19.aleo r4 into r15;
+    call token_registry.aleo/transfer_public_as_signer r1 private_orderbook_v20.aleo r4 into r15;
     async submit_buy_order r0 r1 r2 r3 r4 r7 r15 into r16;
     output r13 as Order.record;
     output r14 as Receipt.record;
-    output r16 as private_orderbook_v19.aleo/submit_buy_order.future;
+    output r16 as private_orderbook_v20.aleo/submit_buy_order.future;
 
 finalize submit_buy_order:
     input r0 as u64.public;
@@ -288,11 +288,11 @@ function submit_buy_order_usdcx:
     hash.bhp256 r10 into r11 as field;
     cast r6 self.caller r11 r0 true r1 r2 7000field r3 0u128 r4 r5 into r12 as Order.record;
     cast self.caller r11 r0 true r1 r2 7000field r3 r4 into r13 as Receipt.record;
-    call test_usdcx_stablecoin.aleo/transfer_public_as_signer private_orderbook_v19.aleo r3 into r14;
+    call test_usdcx_stablecoin.aleo/transfer_public_as_signer private_orderbook_v20.aleo r3 into r14;
     async submit_buy_order_usdcx r0 r1 r2 r3 r6 r14 into r15;
     output r12 as Order.record;
     output r13 as Receipt.record;
-    output r15 as private_orderbook_v19.aleo/submit_buy_order_usdcx.future;
+    output r15 as private_orderbook_v20.aleo/submit_buy_order_usdcx.future;
 
 finalize submit_buy_order_usdcx:
     input r0 as u64.public;
@@ -338,12 +338,12 @@ function submit_sell_order:
     cast r7 self.caller r12 r0 false r2 r3 r1 r13 0u128 r5 r6 into r14 as Order.record;
     cast r4 into r15 as u128;
     cast self.caller r12 r0 false r2 r3 r1 r15 r5 into r16 as Receipt.record;
-    call credits.aleo/transfer_public_as_signer private_orderbook_v19.aleo r4 into r17;
+    call credits.aleo/transfer_public_as_signer private_orderbook_v20.aleo r4 into r17;
     cast r4 into r18 as u128;
     async submit_sell_order r0 r1 r2 r3 r18 r7 r17 into r19;
     output r14 as Order.record;
     output r16 as Receipt.record;
-    output r19 as private_orderbook_v19.aleo/submit_sell_order.future;
+    output r19 as private_orderbook_v20.aleo/submit_sell_order.future;
 
 finalize submit_sell_order:
     input r0 as u64.public;
@@ -383,11 +383,11 @@ function submit_sell_order_usdcx:
     hash.bhp256 r11 into r12 as field;
     cast r7 self.caller r12 r0 false r2 r3 r1 r4 0u128 r5 r6 into r13 as Order.record;
     cast self.caller r12 r0 false r2 r3 r1 r4 r5 into r14 as Receipt.record;
-    call test_usdcx_stablecoin.aleo/transfer_public_as_signer private_orderbook_v19.aleo r4 into r15;
+    call test_usdcx_stablecoin.aleo/transfer_public_as_signer private_orderbook_v20.aleo r4 into r15;
     async submit_sell_order_usdcx r0 r1 r2 r3 r4 r7 r15 into r16;
     output r13 as Order.record;
     output r14 as Receipt.record;
-    output r16 as private_orderbook_v19.aleo/submit_sell_order_usdcx.future;
+    output r16 as private_orderbook_v20.aleo/submit_sell_order_usdcx.future;
 
 finalize submit_sell_order_usdcx:
     input r0 as u64.public;
@@ -464,7 +464,7 @@ function settle_match:
     output r30 as Order.record;
     output r31 as SettlementProof.record;
     output r32 as SettlementProof.record;
-    output r38 as private_orderbook_v19.aleo/settle_match.future;
+    output r38 as private_orderbook_v20.aleo/settle_match.future;
 
 finalize settle_match:
     input r0 as u64.public;
@@ -552,7 +552,7 @@ function settle_match_usdcx:
     output r30 as Order.record;
     output r31 as SettlementProof.record;
     output r32 as SettlementProof.record;
-    output r38 as private_orderbook_v19.aleo/settle_match_usdcx.future;
+    output r38 as private_orderbook_v20.aleo/settle_match_usdcx.future;
 
 finalize settle_match_usdcx:
     input r0 as u64.public;
@@ -639,7 +639,7 @@ function settle_match_usdcx_base:
     output r30 as Order.record;
     output r31 as SettlementProof.record;
     output r32 as SettlementProof.record;
-    output r37 as private_orderbook_v19.aleo/settle_match_usdcx_base.future;
+    output r37 as private_orderbook_v20.aleo/settle_match_usdcx_base.future;
 
 finalize settle_match_usdcx_base:
     input r0 as u64.public;
@@ -672,135 +672,6 @@ finalize settle_match_usdcx_base:
     add r16 r4 into r17;
     set r17 into pair_volume[r0];
 
-function settle_cross_pair:
-    input r0 as Order.record;
-    input r1 as Order.record;
-    input r2 as Order.record;
-    input r3 as u128.private;
-    input r4 as u64.private;
-    input r5 as u128.private;
-    input r6 as u64.private;
-    input r7 as field.private;
-    input r8 as u32.private;
-    input r9 as address.private;
-    not r0.is_buy into r10;
-    assert.eq r10 true;
-    assert.eq r1.is_buy true;
-    not r2.is_buy into r11;
-    assert.eq r11 true;
-    assert.eq r0.pair_id r1.pair_id;
-    assert.eq r0.quote_token_id r1.quote_token_id;
-    assert.eq r0.quote_token_id 7000field;
-    assert.eq r2.quote_token_id 7000field;
-    gte r4 r0.price into r12;
-    assert.eq r12 true;
-    lte r4 r1.price into r13;
-    assert.eq r13 true;
-    gte r6 r2.price into r14;
-    assert.eq r14 true;
-    gt r3 0u128 into r15;
-    assert.eq r15 true;
-    sub r0.quantity r0.filled into r16;
-    lte r3 r16 into r17;
-    assert.eq r17 true;
-    sub r1.quantity r1.filled into r18;
-    lte r3 r18 into r19;
-    assert.eq r19 true;
-    gt r5 0u128 into r20;
-    assert.eq r20 true;
-    sub r2.quantity r2.filled into r21;
-    lte r5 r21 into r22;
-    assert.eq r22 true;
-    cast r4 into r23 as u128;
-    mul r3 r23 into r24;
-    div r24 10000u128 into r25;
-    cast r6 into r26 as u128;
-    mul r5 r26 into r27;
-    div r27 10000u128 into r28;
-    mul r25 10u128 into r29;
-    div r29 10000u128 into r30;
-    mul r25 5u128 into r31;
-    div r31 10000u128 into r32;
-    sub r25 r30 into r33;
-    sub r33 r32 into r34;
-    assert.eq r34 r28;
-    lte r3 r0.escrow_amount into r35;
-    assert.eq r35 true;
-    lte r25 r1.escrow_amount into r36;
-    assert.eq r36 true;
-    lte r5 r2.escrow_amount into r37;
-    assert.eq r37 true;
-    sub r0.escrow_amount r3 into r38;
-    add r0.filled r3 into r39;
-    cast r0.owner r0.trader r0.order_id r0.pair_id r0.is_buy r0.price r0.quantity r0.quote_token_id r38 r39 r0.created_at r0.expires_at into r40 as Order.record;
-    sub r1.escrow_amount r25 into r41;
-    add r1.filled r3 into r42;
-    cast r1.owner r1.trader r1.order_id r1.pair_id r1.is_buy r1.price r1.quantity r1.quote_token_id r41 r42 r1.created_at r1.expires_at into r43 as Order.record;
-    sub r2.escrow_amount r5 into r44;
-    add r2.filled r5 into r45;
-    cast r2.owner r2.trader r2.order_id r2.pair_id r2.is_buy r2.price r2.quantity r2.quote_token_id r44 r45 r2.created_at r2.expires_at into r46 as Order.record;
-    cast r0.trader r0.order_id r3 r4 r7 r5 r8 into r47 as SettlementProof.record;
-    cast r1.trader r1.order_id r3 r4 0field r3 r8 into r48 as SettlementProof.record;
-    cast r2.trader r2.order_id r5 r6 7000field r34 r8 into r49 as SettlementProof.record;
-    cast r3 into r50 as u64;
-    call credits.aleo/transfer_public r1.trader r50 into r51;
-    call token_registry.aleo/transfer_public r7 r0.trader r5 into r52;
-    call test_usdcx_stablecoin.aleo/transfer_public r2.trader r34 into r53;
-    call test_usdcx_stablecoin.aleo/transfer_public self.caller r30 into r54;
-    call test_usdcx_stablecoin.aleo/transfer_public r9 r32 into r55;
-    async settle_cross_pair r0.pair_id r2.pair_id r7 r0.expires_at r1.expires_at r2.expires_at r25 self.caller r9 r51 r52 r53 r54 r55 into r56;
-    output r40 as Order.record;
-    output r43 as Order.record;
-    output r46 as Order.record;
-    output r47 as SettlementProof.record;
-    output r48 as SettlementProof.record;
-    output r49 as SettlementProof.record;
-    output r56 as private_orderbook_v19.aleo/settle_cross_pair.future;
-
-finalize settle_cross_pair:
-    input r0 as u64.public;
-    input r1 as u64.public;
-    input r2 as field.public;
-    input r3 as u32.public;
-    input r4 as u32.public;
-    input r5 as u32.public;
-    input r6 as u128.public;
-    input r7 as address.public;
-    input r8 as address.public;
-    input r9 as credits.aleo/transfer_public.future;
-    input r10 as token_registry.aleo/transfer_public.future;
-    input r11 as test_usdcx_stablecoin.aleo/transfer_public.future;
-    input r12 as test_usdcx_stablecoin.aleo/transfer_public.future;
-    input r13 as test_usdcx_stablecoin.aleo/transfer_public.future;
-    get.or_use keepers[r7] false into r14;
-    assert.eq r14 true;
-    get treasury[true] into r15;
-    assert.eq r8 r15;
-    get token_pairs[r0] into r16;
-    assert.eq r16.is_active true;
-    assert.eq r16.quote_token_id 7000field;
-    get token_pairs[r1] into r17;
-    assert.eq r17.is_active true;
-    assert.eq r17.quote_token_id 7000field;
-    assert.eq r17.base_token_id r2;
-    lte block.height r3 into r18;
-    assert.eq r18 true;
-    lte block.height r4 into r19;
-    assert.eq r19 true;
-    lte block.height r5 into r20;
-    assert.eq r20 true;
-    await r9;
-    await r10;
-    await r11;
-    await r12;
-    await r13;
-    get.or_use pair_volume[r0] 0u128 into r21;
-    add r21 r6 into r22;
-    set r22 into pair_volume[r0];
-    get.or_use pair_volume[r1] 0u128 into r23;
-    add r23 r6 into r24;
-    set r24 into pair_volume[r1];
-
 function request_cancel:
     input r0 as Receipt.record;
     input r1 as address.private;
@@ -808,7 +679,7 @@ function request_cancel:
     cast r1 r0.order_id self.caller r0.is_buy r2 into r3 as CancellationRequest.record;
     async request_cancel r1 into r4;
     output r3 as CancellationRequest.record;
-    output r4 as private_orderbook_v19.aleo/request_cancel.future;
+    output r4 as private_orderbook_v20.aleo/request_cancel.future;
 
 finalize request_cancel:
     input r0 as address.public;
@@ -828,7 +699,7 @@ function cancel_buy_order:
     call token_registry.aleo/transfer_public r0.quote_token_id r1.trader r0.escrow_amount into r5;
     async cancel_buy_order self.caller r5 into r6;
     output r4 as CancellationProof.record;
-    output r6 as private_orderbook_v19.aleo/cancel_buy_order.future;
+    output r6 as private_orderbook_v20.aleo/cancel_buy_order.future;
 
 finalize cancel_buy_order:
     input r0 as address.public;
@@ -851,7 +722,7 @@ function cancel_buy_order_usdcx:
     call test_usdcx_stablecoin.aleo/transfer_public r1.trader r0.escrow_amount into r5;
     async cancel_buy_order_usdcx self.caller r5 into r6;
     output r4 as CancellationProof.record;
-    output r6 as private_orderbook_v19.aleo/cancel_buy_order_usdcx.future;
+    output r6 as private_orderbook_v20.aleo/cancel_buy_order_usdcx.future;
 
 finalize cancel_buy_order_usdcx:
     input r0 as address.public;
@@ -875,7 +746,7 @@ function cancel_sell_order:
     call credits.aleo/transfer_public r1.trader r6 into r7;
     async cancel_sell_order self.caller r7 into r8;
     output r5 as CancellationProof.record;
-    output r8 as private_orderbook_v19.aleo/cancel_sell_order.future;
+    output r8 as private_orderbook_v20.aleo/cancel_sell_order.future;
 
 finalize cancel_sell_order:
     input r0 as address.public;
@@ -898,7 +769,7 @@ function cancel_sell_order_usdcx:
     call test_usdcx_stablecoin.aleo/transfer_public r1.trader r0.escrow_amount into r6;
     async cancel_sell_order_usdcx self.caller r6 into r7;
     output r5 as CancellationProof.record;
-    output r7 as private_orderbook_v19.aleo/cancel_sell_order_usdcx.future;
+    output r7 as private_orderbook_v20.aleo/cancel_sell_order_usdcx.future;
 
 finalize cancel_sell_order_usdcx:
     input r0 as address.public;

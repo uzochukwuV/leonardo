@@ -31,7 +31,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         decryptPermission={DecryptPermission.OnChainHistory}
         network={config.NETWORK === 'testnet' ? Network.TESTNET : Network.MAINNET}
         autoConnect
-        programs={[config.CONTRACT_PROGRAM_ID, 'token_registry.aleo', 'credits.aleo']}
+         programs={[config.CONTRACT_PROGRAM_ID, 'token_registry.aleo', 'credits.aleo', 'test_usdcx_stablecoin.aleo']}
       >
         <WalletModalProvider>
           {children}

@@ -1,9 +1,9 @@
 {
-  "program": "private_orderbook_v20.aleo",
+  "program": "private_matching_orderbook_v1.aleo",
   "version": "0.1.0",
-  "description": "Private tick-based order book with multi-token support via token_registry",
+  "description": "",
   "license": "MIT",
-  "leo": "3.4.0",
+  "leo": "3.5.0",
   "dependencies": [
     {
         "name": "token_registry.aleo",
@@ -16,7 +16,6 @@
       "path": null,
       "edition": 1
     }
-      
   ],
   "dev_dependencies": null
 }

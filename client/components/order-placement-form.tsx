@@ -92,43 +92,40 @@ export function OrderPlacementForm({
   const price = parseFloat(limitPrice) || 0;
   const qty = parseFloat(quantity) || 0;
 
-  // Determine if approval is needed for buy orders
-  // Always require approval for buy orders with non-native quote tokens (no allowance checking)
-  useEffect(() => {
-    // If approval was just completed, don't require it again
-    if (approvalCompleted) {
-      setNeedsApproval(false);
-      return;
-    }
+   // Determine if approval is needed for either buy or sell orders
+   // Buy orders: approve quote token if non-native
+   // Sell orders: approve base token if non-native
+   useEffect(() => {
+     // If approval was just completed, don't require it again
+     if (approvalCompleted) {
+       setNeedsApproval(false);
+       return;
+     }
 
-    // Basic validation
-    if (!connected || !pair || !address) {
-      setNeedsApproval(false);
-      return;
-    }
+     // Basic validation
+     if (!connected || !pair || !address) {
+       setNeedsApproval(false);
+       return;
+     }
 
-    // Sell orders don't need token approval (they escrow base token directly)
-    if (!isBuy) {
-      setNeedsApproval(false);
-      return;
-    }
+     // Need valid quantity and price to proceed
+     if (qty <= 0 || price <= 0) {
+       setNeedsApproval(false);
+       return;
+     }
 
-    // For buy orders, check if quote token is native ALEO (no approval needed)
-    const isNativeQuote = pair.quoteToken.tokenId === '0field';
-    if (isNativeQuote) {
-      setNeedsApproval(false);
-      return;
-    }
+     // Check if the token being escrowed is native ALEO (no approval needed)
+     const escrowTokenIsNative = isBuy 
+       ? pair.quoteToken.tokenId === '0field' 
+       : pair.baseToken.tokenId === '0field';
+     if (escrowTokenIsNative) {
+       setNeedsApproval(false);
+       return;
+     }
 
-    // Need valid quantity and price to proceed
-    if (qty <= 0 || price <= 0) {
-      setNeedsApproval(false);
-      return;
-    }
-
-    // For buy orders with non-native quote tokens, always require approval first
-    setNeedsApproval(true);
-  }, [isBuy, qty, price, connected, pair, address, approvalCompleted]);
+     // For orders with non-native escrow token, always require approval first
+     setNeedsApproval(true);
+   }, [isBuy, qty, price, connected, pair, address, approvalCompleted]);
 
   // Reset approval state when side or pair changes
   const resetFormState = useCallback(() => {
@@ -237,9 +234,11 @@ export function OrderPlacementForm({
         </span>
       );
     }
-    if (showApprovalButton) {
-      return `Approve ${pair.quoteToken.symbol} to continue`;
-    }
+     if (showApprovalButton) {
+       // Show which token needs approval based on order side
+       const tokenToApprove = isBuy ? pair.quoteToken.symbol : pair.baseToken.symbol;
+       return `Approve ${tokenToApprove} to continue`;
+     }
     return `${isBuy ? 'Buy' : 'Sell'} ${pair.baseToken.symbol}`;
   };
 
@@ -510,12 +509,12 @@ export function OrderPlacementForm({
 
         {/* Info notice */}
         {connected && !submitting && !success && (
-          <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
-            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            {isBuy
-              ? `Buy orders require ${pair.quoteToken.symbol} approval to token_registry.aleo, then submit.`
-              : "Sell orders escrow ALEO directly. You'll receive a Receipt record as proof."}
-          </p>
+           <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
+             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+             {isBuy
+               ? `Buy orders require ${pair.quoteToken.symbol} approval to token_registry.aleo, then submit.`
+               : `Sell orders escrow ${pair.baseToken.symbol}. Non-native tokens require approval to token_registry.aleo. You'll receive a Receipt record as proof.`}
+           </p>
         )}
 
         {error && (

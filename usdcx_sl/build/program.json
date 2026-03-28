@@ -1,9 +1,9 @@
 {
-  "program": "private_orderbook_v20.aleo",
+  "program": "private_matching_orderbook_v1.aleo",
   "version": "0.1.0",
   "description": "",
   "license": "",
-  "leo": "3.4.0",
+  "leo": "3.5.0",
   "dependencies": null,
   "dev_dependencies": null
 }

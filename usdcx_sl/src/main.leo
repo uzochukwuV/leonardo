@@ -17,11 +17,10 @@
 //   - Pairs are indexed by pair_id (u64) and stored with full token info
 // ============================================================================
 
-import credits.aleo;
 import token_registry.aleo;
 import test_usdcx_stablecoin.aleo;
 
-program private_orderbook_v20.aleo {
+program private_matching_orderbook_v1.aleo {
 
     // USDCx token ID constant - arbitrary ID to route to test_usdcx_stablecoin.aleo
     // When quote_token_id == 7000field, use USDCx contract instead of token_registry
@@ -41,9 +40,10 @@ program private_orderbook_v20.aleo {
         pair_id: u64,
         is_buy: bool,
         price: u64,               // Price in basis points (quote per base)
-        quantity: u128,           // Base token (ALEO) quantity in microcredits
-        quote_token_id: field,    // Which quote token
-        escrow_amount: u128,      // Amount escrowed (ALEO for sell, quote for buy)
+        quantity: u128,           // Base token quantity in microcredits
+        base_token_id: field,     // Base token (0field = native ALEO)
+        quote_token_id: field,    // Quote token
+        escrow_amount: u128,      // Amount escrowed (base for sell, quote for buy)
         filled: u128,
         created_at: u32,
         expires_at: u32,
@@ -254,13 +254,14 @@ program private_orderbook_v20.aleo {
 
     // ========== ORDER SUBMISSION ==========
 
-    // Submit BUY order - escrow QUOTE TOKEN to buy ALEO
-    // Buyer pays quote tokens, receives ALEO on settlement
+    // Submit BUY order - escrow QUOTE TOKEN to buy BASE token
+    // Buyer pays quote tokens, receives base token on settlement
     async transition submit_buy_order(
         pair_id: u64,
+        base_token_id: field,      // Base token (0field = native ALEO)
         quote_token_id: field,
         price: u64,
-        quantity: u128,            // ALEO quantity to buy (microcredits)
+        quantity: u128,            // Base token quantity to buy
         escrow_quote: u128,        // Quote tokens to escrow
         timestamp: u32,
         expires_at: u32,
@@ -287,6 +288,7 @@ program private_orderbook_v20.aleo {
             is_buy: true,
             price: price,
             quantity: quantity,
+            base_token_id: base_token_id,
             quote_token_id: quote_token_id,
             escrow_amount: escrow_quote,
             filled: 0u128,
@@ -324,6 +326,7 @@ program private_orderbook_v20.aleo {
         ));
     }
 
+    // Shared finalize function for both token_registry and USDCx buy orders
     async function finalize_submit_buy_order(
         pair_id: u64,
         quote_token_id: field,
@@ -352,9 +355,10 @@ program private_orderbook_v20.aleo {
 
     // ========== USDCX ORDER SUBMISSION ==========
 
-    // Submit BUY order with USDCx - escrow USDCx (7000field) to buy ALEO
+    // Submit BUY order with USDCx - escrow USDCx (7000field) to buy base token
     async transition submit_buy_order_usdcx(
         pair_id: u64,
+        base_token_id: field,      // Base token (0field = native ALEO)
         price: u64,
         quantity: u128,
         escrow_quote: u128,
@@ -383,6 +387,7 @@ program private_orderbook_v20.aleo {
             is_buy: true,
             price: price,
             quantity: quantity,
+            base_token_id: base_token_id,
             quote_token_id: USDCX_TOKEN_ID,
             escrow_amount: escrow_quote,
             filled: 0u128,
@@ -408,50 +413,28 @@ program private_orderbook_v20.aleo {
             escrow_quote
         );
 
-        return (order, receipt, finalize_submit_buy_order_usdcx(
-            pair_id, price, quantity, escrow_quote, orchestrator_addr, escrow_future
+        // Use shared finalize function with USDCX_TOKEN_ID
+        return (order, receipt, finalize_submit_buy_order(
+            pair_id, USDCX_TOKEN_ID, price, quantity, escrow_quote, orchestrator_addr, escrow_future
         ));
     }
 
-    async function finalize_submit_buy_order_usdcx(
-        pair_id: u64,
-        price: u64,
-        quantity: u128,
-        escrow_quote: u128,
-        orchestrator_addr: address,
-        escrow_future: Future
-    ) {
-        let expected_orch: address = Mapping::get(orchestrator, true);
-        assert_eq(orchestrator_addr, expected_orch);
-
-        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
-        assert(pair.is_active);
-        assert_eq(pair.quote_token_id, USDCX_TOKEN_ID);
-
-        let required: u128 = (quantity * price as u128 + 9999u128) / 10000u128;
-        assert(escrow_quote >= required);
-
-        escrow_future.await();
-
-        let counter: u64 = Mapping::get_or_use(order_counter, true, 0u64);
-        Mapping::set(order_counter, true, counter + 1u64);
-    }
-
-    // Submit SELL order - escrow ALEO to sell for QUOTE TOKEN
-    // Seller pays ALEO, receives quote tokens on settlement
+    // Submit SELL order - escrow BASE TOKEN to sell for QUOTE TOKEN
+    // Seller pays base token, receives quote tokens on settlement
     async transition submit_sell_order(
         pair_id: u64,
+        base_token_id: field,      // Base token (0field = native ALEO)
         quote_token_id: field,
         price: u64,
-        quantity: u128,            // ALEO quantity to sell (microcredits)
-        escrow_aleo: u64,          // ALEO to escrow (must equal quantity)
+        quantity: u128,            // Base token quantity to sell
+        escrow_base: u128,         // Base tokens to escrow (must equal quantity)
         timestamp: u32,
         expires_at: u32,
         orchestrator_addr: address
     ) -> (Order, Receipt, Future) {
         assert(quantity > 0u128);
         assert(price > 0u64);
-        assert(escrow_aleo > 0u64);
+        assert(escrow_base > 0u128);
 
         let order_id: field = BHP256::hash_to_field(OrderIdInput {
             caller: self.caller,
@@ -470,8 +453,9 @@ program private_orderbook_v20.aleo {
             is_buy: false,
             price: price,
             quantity: quantity,
+            base_token_id: base_token_id,
             quote_token_id: quote_token_id,
-            escrow_amount: escrow_aleo as u128,
+            escrow_amount: escrow_base,
             filled: 0u128,
             created_at: timestamp,
             expires_at: expires_at,
@@ -485,33 +469,37 @@ program private_orderbook_v20.aleo {
             price: price,
             quantity: quantity,
             quote_token_id: quote_token_id,
-            escrow_amount: escrow_aleo as u128,
+            escrow_amount: escrow_base,
             created_at: timestamp,
         };
 
-        // Escrow ALEO via credits.aleo
-        let escrow_future: Future = credits.aleo/transfer_public_as_signer(
+        // Escrow base token via token_registry
+        let escrow_future: Future = token_registry.aleo/transfer_public_as_signer(
+            base_token_id,
             self.address,
-            escrow_aleo
+            escrow_base
         );
 
         return (order, receipt, finalize_submit_sell_order(
             pair_id,
+            base_token_id,
             quote_token_id,
             price,
             quantity,
-            escrow_aleo as u128,
+            escrow_base,
             orchestrator_addr,
             escrow_future
         ));
     }
 
+    // Shared finalize function for both token_registry and USDCx sell orders
     async function finalize_submit_sell_order(
         pair_id: u64,
+        base_token_id: field,
         quote_token_id: field,
         price: u64,
         quantity: u128,
-        escrow_aleo: u128,
+        escrow_base: u128,
         orchestrator_addr: address,
         escrow_future: Future
     ) {
@@ -520,10 +508,11 @@ program private_orderbook_v20.aleo {
 
         let pair: TokenPair = Mapping::get(token_pairs, pair_id);
         assert(pair.is_active);
+        assert_eq(pair.base_token_id, base_token_id);
         assert_eq(pair.quote_token_id, quote_token_id);
 
         // Verify seller escrowed exactly the quantity
-        assert_eq(escrow_aleo, quantity);
+        assert_eq(escrow_base, quantity);
 
         escrow_future.await();
 
@@ -564,6 +553,7 @@ program private_orderbook_v20.aleo {
             is_buy: false,
             price: price,
             quantity: quantity,
+            base_token_id: USDCX_TOKEN_ID,  // USDCx is the base token
             quote_token_id: quote_token_id,
             escrow_amount: escrow_usdcx,
             filled: 0u128,
@@ -589,36 +579,10 @@ program private_orderbook_v20.aleo {
             escrow_usdcx
         );
 
-        return (order, receipt, finalize_sell_order_usdcx(
-            pair_id, quote_token_id, price, quantity, escrow_usdcx, orchestrator_addr, escrow_future
+        // Use shared finalize function with USDCX_TOKEN_ID as base token
+        return (order, receipt, finalize_submit_sell_order(
+            pair_id, USDCX_TOKEN_ID, quote_token_id, price, quantity, escrow_usdcx, orchestrator_addr, escrow_future
         ));
-    }
-
-    async function finalize_sell_order_usdcx(
-        pair_id: u64,
-        quote_token_id: field,
-        price: u64,
-        quantity: u128,
-        escrow_usdcx: u128,
-        orchestrator_addr: address,
-        escrow_future: Future
-    ) {
-        let expected_orch: address = Mapping::get(orchestrator, true);
-        assert_eq(orchestrator_addr, expected_orch);
-
-        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
-        assert(pair.is_active);
-        // Verify pair has USDCx as base token
-        assert_eq(pair.base_token_id, USDCX_TOKEN_ID);
-        assert_eq(pair.quote_token_id, quote_token_id);
-
-        // Verify seller escrowed exactly the quantity
-        assert_eq(escrow_usdcx, quantity);
-
-        escrow_future.await();
-
-        let counter: u64 = Mapping::get_or_use(order_counter, true, 0u64);
-        Mapping::set(order_counter, true, counter + 1u64);
     }
 
     // ========== SETTLEMENT ==========
@@ -669,6 +633,7 @@ program private_orderbook_v20.aleo {
             is_buy: buy_order.is_buy,
             price: buy_order.price,
             quantity: buy_order.quantity,
+            base_token_id: buy_order.base_token_id,
             quote_token_id: buy_order.quote_token_id,
             escrow_amount: buy_order.escrow_amount - quote_amount,
             filled: buy_order.filled + fill_quantity,
@@ -676,7 +641,7 @@ program private_orderbook_v20.aleo {
             expires_at: buy_order.expires_at,
         };
 
-        // Updated sell order: filled += fill_quantity, escrow_amount -= ALEO paid out
+        // Updated sell order: filled += fill_quantity, escrow_amount -= base token paid out
         let updated_sell: Order = Order {
             owner: sell_order.owner,
             trader: sell_order.trader,
@@ -685,6 +650,7 @@ program private_orderbook_v20.aleo {
             is_buy: sell_order.is_buy,
             price: sell_order.price,
             quantity: sell_order.quantity,
+            base_token_id: sell_order.base_token_id,
             quote_token_id: sell_order.quote_token_id,
             escrow_amount: sell_order.escrow_amount - fill_quantity,
             filled: sell_order.filled + fill_quantity,
@@ -698,7 +664,7 @@ program private_orderbook_v20.aleo {
             order_id: buy_order.order_id,
             fill_quantity: fill_quantity,
             fill_price: fill_price,
-            received_token: 0field,  // ALEO
+            received_token: buy_order.base_token_id,  // Base token received
             received_amount: fill_quantity,
             settled_at: timestamp,
         };
@@ -713,10 +679,11 @@ program private_orderbook_v20.aleo {
             settled_at: timestamp,
         };
 
-        // Transfer ALEO to buyer (from seller's escrowed ALEO)
-        let pay_buyer: Future = credits.aleo/transfer_public(
+        // Transfer base token to buyer (from seller's escrowed base token)
+        let pay_buyer: Future = token_registry.aleo/transfer_public(
+            sell_order.base_token_id,
             buy_order.trader,
-            fill_quantity as u64
+            fill_quantity
         );
         // Transfer quote tokens to seller
         let pay_seller: Future = token_registry.aleo/transfer_public(
@@ -739,6 +706,8 @@ program private_orderbook_v20.aleo {
 
         return (updated_buy, updated_sell, buyer_proof, seller_proof, finalize_settle_match(
             buy_order.pair_id,
+            sell_order.base_token_id,
+            quote_token_id,
             buy_order.expires_at,
             sell_order.expires_at,
             fill_quantity,
@@ -752,8 +721,11 @@ program private_orderbook_v20.aleo {
         ));
     }
 
+    // Shared finalize function for all settlement variants
     async function finalize_settle_match(
         pair_id: u64,
+        base_token_id: field,
+        quote_token_id: field,
         buy_expires_at: u32,
         sell_expires_at: u32,
         fill_quantity: u128,
@@ -773,6 +745,8 @@ program private_orderbook_v20.aleo {
 
         let pair: TokenPair = Mapping::get(token_pairs, pair_id);
         assert(pair.is_active);
+        assert_eq(pair.base_token_id, base_token_id);
+        assert_eq(pair.quote_token_id, quote_token_id);
 
         // Both orders must not have expired at settlement time
         assert(block.height <= buy_expires_at);
@@ -827,6 +801,7 @@ program private_orderbook_v20.aleo {
             is_buy: buy_order.is_buy,
             price: buy_order.price,
             quantity: buy_order.quantity,
+            base_token_id: buy_order.base_token_id,
             quote_token_id: buy_order.quote_token_id,
             escrow_amount: buy_order.escrow_amount - quote_amount,
             filled: buy_order.filled + fill_quantity,
@@ -842,6 +817,7 @@ program private_orderbook_v20.aleo {
             is_buy: sell_order.is_buy,
             price: sell_order.price,
             quantity: sell_order.quantity,
+            base_token_id: sell_order.base_token_id,
             quote_token_id: sell_order.quote_token_id,
             escrow_amount: sell_order.escrow_amount - fill_quantity,
             filled: sell_order.filled + fill_quantity,
@@ -854,7 +830,7 @@ program private_orderbook_v20.aleo {
             order_id: buy_order.order_id,
             fill_quantity: fill_quantity,
             fill_price: fill_price,
-            received_token: 0field,
+            received_token: buy_order.base_token_id,
             received_amount: fill_quantity,
             settled_at: timestamp,
         };
@@ -869,10 +845,11 @@ program private_orderbook_v20.aleo {
             settled_at: timestamp,
         };
 
-        // Transfer ALEO to buyer
-        let pay_buyer: Future = credits.aleo/transfer_public(
+        // Transfer base token to buyer
+        let pay_buyer: Future = token_registry.aleo/transfer_public(
+            sell_order.base_token_id,
             buy_order.trader,
-            fill_quantity as u64
+            fill_quantity
         );
         // Transfer USDCx to seller
         let pay_seller: Future = test_usdcx_stablecoin.aleo/transfer_public(
@@ -890,8 +867,11 @@ program private_orderbook_v20.aleo {
             protocol_fee
         );
 
-        return (updated_buy, updated_sell, buyer_proof, seller_proof, finalize_settle_match_usdcx(
+        // Use shared finalize function with base token from order and USDCx as quote
+        return (updated_buy, updated_sell, buyer_proof, seller_proof, finalize_settle_match(
             buy_order.pair_id,
+            sell_order.base_token_id,
+            USDCX_TOKEN_ID,
             buy_order.expires_at,
             sell_order.expires_at,
             fill_quantity,
@@ -903,41 +883,6 @@ program private_orderbook_v20.aleo {
             pay_settler,
             pay_protocol
         ));
-    }
-
-    async function finalize_settle_match_usdcx(
-        pair_id: u64,
-        buy_expires_at: u32,
-        sell_expires_at: u32,
-        fill_quantity: u128,
-        quote_amount: u128,
-        caller: address,
-        treasury_addr: address,
-        pay_buyer: Future,
-        pay_seller: Future,
-        pay_settler: Future,
-        pay_protocol: Future
-    ) {
-        let is_keeper: bool = Mapping::get_or_use(keepers, caller, false);
-        assert(is_keeper);
-
-        let expected_treasury: address = Mapping::get(treasury, true);
-        assert_eq(treasury_addr, expected_treasury);
-
-        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
-        assert(pair.is_active);
-        assert_eq(pair.quote_token_id, USDCX_TOKEN_ID);
-
-        assert(block.height <= buy_expires_at);
-        assert(block.height <= sell_expires_at);
-
-        pay_buyer.await();
-        pay_seller.await();
-        pay_settler.await();
-        pay_protocol.await();
-
-        let volume: u128 = Mapping::get_or_use(pair_volume, pair_id, 0u128);
-        Mapping::set(pair_volume, pair_id, volume + quote_amount);
     }
 
     // Settle when USDCx is BASE token - buyer receives USDCx, seller receives quote tokens
@@ -978,6 +923,7 @@ program private_orderbook_v20.aleo {
             is_buy: buy_order.is_buy,
             price: buy_order.price,
             quantity: buy_order.quantity,
+            base_token_id: buy_order.base_token_id,
             quote_token_id: buy_order.quote_token_id,
             escrow_amount: buy_order.escrow_amount - quote_amount,
             filled: buy_order.filled + fill_quantity,
@@ -993,6 +939,7 @@ program private_orderbook_v20.aleo {
             is_buy: sell_order.is_buy,
             price: sell_order.price,
             quantity: sell_order.quantity,
+            base_token_id: sell_order.base_token_id,
             quote_token_id: sell_order.quote_token_id,
             escrow_amount: sell_order.escrow_amount - fill_quantity,
             filled: sell_order.filled + fill_quantity,
@@ -1005,7 +952,7 @@ program private_orderbook_v20.aleo {
             order_id: buy_order.order_id,
             fill_quantity: fill_quantity,
             fill_price: fill_price,
-            received_token: USDCX_TOKEN_ID,  // Buyer receives USDCx
+            received_token: buy_order.base_token_id,  // Buyer receives base token (USDCx)
             received_amount: fill_quantity,
             settled_at: timestamp,
         };
@@ -1044,8 +991,11 @@ program private_orderbook_v20.aleo {
             protocol_fee
         );
 
-        return (updated_buy, updated_sell, buyer_proof, seller_proof, fin_settle_usdcx_base(
+        // Use shared finalize function with USDCx as base and quote from order
+        return (updated_buy, updated_sell, buyer_proof, seller_proof, finalize_settle_match(
             buy_order.pair_id,
+            USDCX_TOKEN_ID,
+            quote_token_id,
             buy_order.expires_at,
             sell_order.expires_at,
             fill_quantity,
@@ -1059,251 +1009,275 @@ program private_orderbook_v20.aleo {
         ));
     }
 
-    async function fin_settle_usdcx_base(
-        pair_id: u64,
-        buy_expires_at: u32,
-        sell_expires_at: u32,
-        fill_quantity: u128,
-        quote_amount: u128,
+    // ========== CROSS-PAIR SETTLEMENT ==========
+    // Atomic settlement for cross-pair swaps via USDCx bridge
+    // Example: User sells ALEO → receives TKNB (via ALEO/USDCx + TKNB/USDCx pairs)
+    //
+    // Participants:
+    //   - User: sells base token (leg1), receives base token (leg2)
+    //   - CP1: buys base token on leg1 pair (has escrowed USDCx)
+    //   - CP2: sells base token on leg2 pair (has escrowed target token)
+    //
+    // Token Flow:
+    //   - User's ALEO → CP1
+    //   - CP1's USDCx → CP2 (bridge, internal routing)
+    //   - CP2's TKNB → User
+
+    async transition settle_cross_pair(
+        // User's sell order on leg1 pair (e.g., sells ALEO for USDCx)
+        user_sell_order: Order,
+        // Counterparty 1's buy order on leg1 pair (buys ALEO with USDCx)
+        cp1_buy_order: Order,
+        // Counterparty 2's sell order on leg2 pair (sells TKNB for USDCx)
+        cp2_sell_order: Order,
+        // Fill quantities and prices
+        fill_qty_leg1: u128,     // Amount of base token in leg1 (e.g., ALEO)
+        fill_price_leg1: u64,    // Price for leg1 (ALEO/USDCx)
+        fill_qty_leg2: u128,     // Amount of base token in leg2 user receives (e.g., TKNB)
+        fill_price_leg2: u64,    // Price for leg2 (TKNB/USDCx)
+        leg2_base_token_id: field, // Base token ID of leg2 pair (token user receives)
+        timestamp: u32,
+        treasury_addr: address
+    ) -> (Order, Order, Order, SettlementProof, SettlementProof, SettlementProof, Future) {
+        // Validate order directions
+        assert(!user_sell_order.is_buy);  // User is selling
+        assert(cp1_buy_order.is_buy);     // CP1 is buying on leg1
+        assert(!cp2_sell_order.is_buy);   // CP2 is selling on leg2
+
+        // Both leg1 orders must be on same pair
+        assert_eq(user_sell_order.pair_id, cp1_buy_order.pair_id);
+        assert_eq(user_sell_order.quote_token_id, cp1_buy_order.quote_token_id);
+
+        // Leg1 and Leg2 must both use USDCx as quote (bridge token)
+        assert_eq(user_sell_order.quote_token_id, USDCX_TOKEN_ID);
+        assert_eq(cp2_sell_order.quote_token_id, USDCX_TOKEN_ID);
+
+        // Price validation
+        assert(fill_price_leg1 >= user_sell_order.price);   // User gets at least their limit
+        assert(fill_price_leg1 <= cp1_buy_order.price);     // CP1 pays at most their limit
+        assert(fill_price_leg2 >= cp2_sell_order.price);    // CP2 gets at least their limit
+
+        // Quantity validation for leg1
+        assert(fill_qty_leg1 > 0u128);
+        assert(fill_qty_leg1 <= user_sell_order.quantity - user_sell_order.filled);
+        assert(fill_qty_leg1 <= cp1_buy_order.quantity - cp1_buy_order.filled);
+
+        // Quantity validation for leg2
+        assert(fill_qty_leg2 > 0u128);
+        assert(fill_qty_leg2 <= cp2_sell_order.quantity - cp2_sell_order.filled);
+
+        // Calculate USDCx amounts
+        // Leg1: User sells ALEO → CP1 pays USDCx
+        let usdcx_from_leg1: u128 = (fill_qty_leg1 * fill_price_leg1 as u128) / 10000u128;
+        // Leg2: CP2 sells TKNB → needs USDCx payment
+        let usdcx_for_leg2: u128 = (fill_qty_leg2 * fill_price_leg2 as u128) / 10000u128;
+
+        // USDCx must balance: what CP1 pays must cover what CP2 needs (minus fees)
+        let settler_fee: u128 = (usdcx_from_leg1 * SETTLER_FEE_BPS as u128) / 10000u128;
+        let protocol_fee: u128 = (usdcx_from_leg1 * PROTOCOL_FEE_BPS as u128) / 10000u128;
+        let bridge_amount: u128 = usdcx_from_leg1 - settler_fee - protocol_fee;
+
+        // Bridge amount must equal what CP2 receives
+        assert_eq(bridge_amount, usdcx_for_leg2);
+
+        // Validate escrow amounts
+        assert(fill_qty_leg1 <= user_sell_order.escrow_amount);  // User escrowed base token
+        assert(usdcx_from_leg1 <= cp1_buy_order.escrow_amount);  // CP1 escrowed USDCx
+        assert(fill_qty_leg2 <= cp2_sell_order.escrow_amount);   // CP2 escrowed target token
+
+        // Update user's sell order (leg1)
+        let updated_user: Order = Order {
+            owner: user_sell_order.owner,
+            trader: user_sell_order.trader,
+            order_id: user_sell_order.order_id,
+            pair_id: user_sell_order.pair_id,
+            is_buy: user_sell_order.is_buy,
+            price: user_sell_order.price,
+            quantity: user_sell_order.quantity,
+            base_token_id: user_sell_order.base_token_id,
+            quote_token_id: user_sell_order.quote_token_id,
+            escrow_amount: user_sell_order.escrow_amount - fill_qty_leg1,
+            filled: user_sell_order.filled + fill_qty_leg1,
+            created_at: user_sell_order.created_at,
+            expires_at: user_sell_order.expires_at,
+        };
+
+        // Update CP1's buy order (leg1)
+        let updated_cp1: Order = Order {
+            owner: cp1_buy_order.owner,
+            trader: cp1_buy_order.trader,
+            order_id: cp1_buy_order.order_id,
+            pair_id: cp1_buy_order.pair_id,
+            is_buy: cp1_buy_order.is_buy,
+            price: cp1_buy_order.price,
+            quantity: cp1_buy_order.quantity,
+            base_token_id: cp1_buy_order.base_token_id,
+            quote_token_id: cp1_buy_order.quote_token_id,
+            escrow_amount: cp1_buy_order.escrow_amount - usdcx_from_leg1,
+            filled: cp1_buy_order.filled + fill_qty_leg1,
+            created_at: cp1_buy_order.created_at,
+            expires_at: cp1_buy_order.expires_at,
+        };
+
+        // Update CP2's sell order (leg2)
+        let updated_cp2: Order = Order {
+            owner: cp2_sell_order.owner,
+            trader: cp2_sell_order.trader,
+            order_id: cp2_sell_order.order_id,
+            pair_id: cp2_sell_order.pair_id,
+            is_buy: cp2_sell_order.is_buy,
+            price: cp2_sell_order.price,
+            quantity: cp2_sell_order.quantity,
+            base_token_id: cp2_sell_order.base_token_id,
+            quote_token_id: cp2_sell_order.quote_token_id,
+            escrow_amount: cp2_sell_order.escrow_amount - fill_qty_leg2,
+            filled: cp2_sell_order.filled + fill_qty_leg2,
+            created_at: cp2_sell_order.created_at,
+            expires_at: cp2_sell_order.expires_at,
+        };
+
+        // Settlement proofs
+        let user_proof: SettlementProof = SettlementProof {
+            owner: user_sell_order.trader,
+            order_id: user_sell_order.order_id,
+            fill_quantity: fill_qty_leg1,
+            fill_price: fill_price_leg1,
+            received_token: leg2_base_token_id,  // Token user receives from leg2
+            received_amount: fill_qty_leg2,
+            settled_at: timestamp,
+        };
+
+        let cp1_proof: SettlementProof = SettlementProof {
+            owner: cp1_buy_order.trader,
+            order_id: cp1_buy_order.order_id,
+            fill_quantity: fill_qty_leg1,
+            fill_price: fill_price_leg1,
+            received_token: 0field,  // ALEO (native credits)
+            received_amount: fill_qty_leg1,
+            settled_at: timestamp,
+        };
+
+        let cp2_proof: SettlementProof = SettlementProof {
+            owner: cp2_sell_order.trader,
+            order_id: cp2_sell_order.order_id,
+            fill_quantity: fill_qty_leg2,
+            fill_price: fill_price_leg2,
+            received_token: USDCX_TOKEN_ID,
+            received_amount: bridge_amount,
+            settled_at: timestamp,
+        };
+
+        // Execute transfers:
+        // 1. User's base token → CP1 (using base_token_id from Order)
+        let pay_cp1: Future = token_registry.aleo/transfer_public(
+            user_sell_order.base_token_id,
+            cp1_buy_order.trader,
+            fill_qty_leg1
+        );
+
+        // 2. CP2's target token → User (via token_registry)
+        let pay_user: Future = token_registry.aleo/transfer_public(
+            leg2_base_token_id,
+            user_sell_order.trader,
+            fill_qty_leg2
+        );
+
+        // 3. Bridge: CP1's USDCx → CP2 (internal routing)
+        let pay_cp2: Future = test_usdcx_stablecoin.aleo/transfer_public(
+            cp2_sell_order.trader,
+            bridge_amount
+        );
+
+        // 4. Settler fee (USDCx)
+        let pay_settler: Future = test_usdcx_stablecoin.aleo/transfer_public(
+            self.caller,
+            settler_fee
+        );
+
+        // 5. Protocol fee (USDCx)
+        let pay_protocol: Future = test_usdcx_stablecoin.aleo/transfer_public(
+            treasury_addr,
+            protocol_fee
+        );
+
+        return (
+            updated_user, updated_cp1, updated_cp2,
+            user_proof, cp1_proof, cp2_proof,
+            fin_settle_cross_pair(
+                user_sell_order.pair_id,
+                cp2_sell_order.pair_id,
+                leg2_base_token_id,
+                user_sell_order.expires_at,
+                cp1_buy_order.expires_at,
+                cp2_sell_order.expires_at,
+                usdcx_from_leg1,
+                self.caller,
+                treasury_addr,
+                pay_cp1,
+                pay_user,
+                pay_cp2,
+                pay_settler,
+                pay_protocol
+            )
+        );
+    }
+
+    async function fin_settle_cross_pair(
+        pair_id_leg1: u64,
+        pair_id_leg2: u64,
+        leg2_base_token_id: field,
+        user_expires_at: u32,
+        cp1_expires_at: u32,
+        cp2_expires_at: u32,
+        bridge_volume: u128,
         caller: address,
         treasury_addr: address,
-        pay_buyer: Future,
-        pay_seller: Future,
+        pay_cp1: Future,
+        pay_user: Future,
+        pay_cp2: Future,
         pay_settler: Future,
         pay_protocol: Future
     ) {
+        // Verify keeper
         let is_keeper: bool = Mapping::get_or_use(keepers, caller, false);
         assert(is_keeper);
 
+        // Verify treasury
         let expected_treasury: address = Mapping::get(treasury, true);
         assert_eq(treasury_addr, expected_treasury);
 
-        let pair: TokenPair = Mapping::get(token_pairs, pair_id);
-        assert(pair.is_active);
-        assert_eq(pair.base_token_id, USDCX_TOKEN_ID);
+        // Verify leg1 pair is active and uses USDCx as quote
+        let pair1: TokenPair = Mapping::get(token_pairs, pair_id_leg1);
+        assert(pair1.is_active);
+        assert_eq(pair1.quote_token_id, USDCX_TOKEN_ID);
 
-        assert(block.height <= buy_expires_at);
-        assert(block.height <= sell_expires_at);
+        // Verify leg2 pair is active, uses USDCx as quote, and base token matches
+        let pair2: TokenPair = Mapping::get(token_pairs, pair_id_leg2);
+        assert(pair2.is_active);
+        assert_eq(pair2.quote_token_id, USDCX_TOKEN_ID);
+        assert_eq(pair2.base_token_id, leg2_base_token_id);
 
-        pay_buyer.await();
-        pay_seller.await();
+        // Verify all orders not expired
+        assert(block.height <= user_expires_at);
+        assert(block.height <= cp1_expires_at);
+        assert(block.height <= cp2_expires_at);
+
+        // Execute all transfers atomically
+        pay_cp1.await();
+        pay_user.await();
+        pay_cp2.await();
         pay_settler.await();
         pay_protocol.await();
 
-        let volume: u128 = Mapping::get_or_use(pair_volume, pair_id, 0u128);
-        Mapping::set(pair_volume, pair_id, volume + quote_amount);
+        // Update volume for both pairs
+        let volume1: u128 = Mapping::get_or_use(pair_volume, pair_id_leg1, 0u128);
+        Mapping::set(pair_volume, pair_id_leg1, volume1 + bridge_volume);
+
+        let volume2: u128 = Mapping::get_or_use(pair_volume, pair_id_leg2, 0u128);
+        Mapping::set(pair_volume, pair_id_leg2, volume2 + bridge_volume);
     }
 
-    // NOTE: Cross-pair settlement (settle_cross_pair) removed due to deployment size limits.
-    // Cross-pair trading is handled by the keeper executing two sequential settlements
-    // via USDCx bridge pairs. This maintains functionality while staying within limits.
+   
 
-    // ========== CANCELLATION ==========
-
-    // STEP 1 (TRADER): Request cancellation using your Receipt as proof of order.
-    // Creates a CancellationRequest record owned by the keeper so they can see and act on it.
-    async transition request_cancel(
-        receipt: Receipt,
-        keeper_addr: address,
-        timestamp: u32
-    ) -> (CancellationRequest, Future) {
-        // receipt.owner == self.caller is enforced by ZK record ownership
-
-        let cancel_req: CancellationRequest = CancellationRequest {
-            owner: keeper_addr,
-            order_id: receipt.order_id,
-            trader: self.caller,
-            is_buy: receipt.is_buy,
-            created_at: timestamp,
-        };
-
-        return (cancel_req, async {
-            let expected_orch: address = Mapping::get(orchestrator, true);
-            assert_eq(keeper_addr, expected_orch);
-        });
-    }
-
-    // STEP 2 (KEEPER): Cancel BUY order - refund quote tokens, give trader a CancellationProof
-    async transition cancel_buy_order(
-        order: Order,
-        cancel_req: CancellationRequest,
-        timestamp: u32
-    ) -> (CancellationProof, Future) {
-        // Keeper owns both records — enforced by ZK
-        assert(order.is_buy);
-        assert_eq(order.order_id, cancel_req.order_id);
-        assert_eq(cancel_req.trader, order.trader);  // refund must go to the order's trader
-
-        // escrow_amount is already reduced by any prior partial fills — refund what remains
-        let refund: u128 = order.escrow_amount;
-        assert(refund > 0u128);
-
-        let proof: CancellationProof = CancellationProof {
-            owner: cancel_req.trader,
-            order_id: order.order_id,
-            is_buy: true,
-            returned_amount: refund,
-            cancelled_at: timestamp,
-        };
-
-        // Refund quote tokens to trader
-        let refund_future: Future = token_registry.aleo/transfer_public(
-            order.quote_token_id,
-            cancel_req.trader,
-            refund
-        );
-
-        return (proof, finalize_cancel_order(self.caller, refund_future));
-    }
-
-    // Cancel BUY order with USDCx quote - refund USDCx to trader
-    async transition cancel_buy_order_usdcx(
-        order: Order,
-        cancel_req: CancellationRequest,
-        timestamp: u32
-    ) -> (CancellationProof, Future) {
-        assert(order.is_buy);
-        assert_eq(order.order_id, cancel_req.order_id);
-        assert_eq(cancel_req.trader, order.trader);
-        assert_eq(order.quote_token_id, USDCX_TOKEN_ID);
-
-        let refund: u128 = order.escrow_amount;
-        assert(refund > 0u128);
-
-        let proof: CancellationProof = CancellationProof {
-            owner: cancel_req.trader,
-            order_id: order.order_id,
-            is_buy: true,
-            returned_amount: refund,
-            cancelled_at: timestamp,
-        };
-
-        // Refund USDCx to trader
-        let refund_future: Future = test_usdcx_stablecoin.aleo/transfer_public(
-            cancel_req.trader,
-            refund
-        );
-
-        return (proof, finalize_cancel_order(self.caller, refund_future));
-    }
-
-    // STEP 2 (KEEPER): Cancel SELL order - refund ALEO, give trader a CancellationProof
-    async transition cancel_sell_order(
-        order: Order,
-        cancel_req: CancellationRequest,
-        timestamp: u32
-    ) -> (CancellationProof, Future) {
-        // Keeper owns both records — enforced by ZK
-        assert(!order.is_buy);
-        assert_eq(order.order_id, cancel_req.order_id);
-        assert_eq(cancel_req.trader, order.trader);  // refund must go to the order's trader
-
-        // escrow_amount is already reduced by any prior partial fills — refund what remains
-        let refund: u128 = order.escrow_amount;
-        assert(refund > 0u128);
-
-        let proof: CancellationProof = CancellationProof {
-            owner: cancel_req.trader,
-            order_id: order.order_id,
-            is_buy: false,
-            returned_amount: refund,
-            cancelled_at: timestamp,
-        };
-
-        // Refund ALEO to trader
-        let refund_future: Future = credits.aleo/transfer_public(
-            cancel_req.trader,
-            refund as u64
-        );
-
-        return (proof, finalize_cancel_order(self.caller, refund_future));
-    }
-
-    // Cancel SELL order with USDCx as BASE - refund USDCx to trader
-    async transition cancel_sell_order_usdcx(
-        order: Order,
-        cancel_req: CancellationRequest,
-        timestamp: u32
-    ) -> (CancellationProof, Future) {
-        assert(!order.is_buy);
-        assert_eq(order.order_id, cancel_req.order_id);
-        assert_eq(cancel_req.trader, order.trader);
-
-        let refund: u128 = order.escrow_amount;
-        assert(refund > 0u128);
-
-        let proof: CancellationProof = CancellationProof {
-            owner: cancel_req.trader,
-            order_id: order.order_id,
-            is_buy: false,
-            returned_amount: refund,
-            cancelled_at: timestamp,
-        };
-
-        // Refund USDCx to trader (USDCx was base token)
-        let refund_future: Future = test_usdcx_stablecoin.aleo/transfer_public(
-            cancel_req.trader,
-            refund
-        );
-
-        return (proof, finalize_cancel_order(self.caller, refund_future));
-    }
-
-    async function finalize_cancel_order(caller: address, refund_future: Future) {
-        let is_keeper: bool = Mapping::get_or_use(keepers, caller, false);
-        assert(is_keeper);
-        refund_future.await();
-    }
-
-    // ========== SPLIT ORDER ==========
-
-    transition split_order(
-        order: Order,
-        fill_quantity: u128
-    ) -> (Order, Order) {
-        assert_eq(order.owner, self.caller);
-        assert(fill_quantity < order.quantity);
-        assert(fill_quantity > 0u128);
-
-        let remaining_quantity: u128 = order.quantity - fill_quantity;
-        let fill_escrow: u128 = (order.escrow_amount * fill_quantity) / order.quantity;
-        let remaining_escrow: u128 = order.escrow_amount - fill_escrow;
-
-        let fill_order: Order = Order {
-            owner: self.caller,
-            trader: order.trader,
-            order_id: order.order_id,
-            pair_id: order.pair_id,
-            is_buy: order.is_buy,
-            price: order.price,
-            quantity: fill_quantity,
-            quote_token_id: order.quote_token_id,
-            escrow_amount: fill_escrow,
-            filled: 0u128,
-            created_at: order.created_at,
-            expires_at: order.expires_at,
-        };
-
-        let new_order_id: field = BHP256::hash_to_field(SplitOrderIdInput {
-            original_order_id: order.order_id,
-            remaining_quantity: remaining_quantity,
-        });
-
-        let remaining_order: Order = Order {
-            owner: self.caller,
-            trader: order.trader,
-            order_id: new_order_id,
-            pair_id: order.pair_id,
-            is_buy: order.is_buy,
-            price: order.price,
-            quantity: remaining_quantity,
-            quote_token_id: order.quote_token_id,
-            escrow_amount: remaining_escrow,
-            filled: 0u128,
-            created_at: order.created_at,
-            expires_at: order.expires_at,
-        };
-
-        return (fill_order, remaining_order);
-    }
+   
 }

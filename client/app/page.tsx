@@ -6,19 +6,20 @@ import { ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { useEffect } from 'react';
+import { config } from '@/lib/config';
 
 export default function Home() {
   const { address, requestRecords, decrypt, executeTransaction } = useWallet();
 
-  useEffect(() => {
-    if (address && requestRecords) {
-      requestRecords('private_orderbook_v17.aleo').then((records) => {
-        console.log('User records:', records);
-      }).catch(() => {
-        // Ignore errors - user may not have records
-      });
-    }
-  }, [address, requestRecords]);
+   useEffect(() => {
+     if (address && requestRecords) {
+       requestRecords(config.CONTRACT_PROGRAM_ID).then((records) => {
+         console.log('User records:', records);
+       }).catch(() => {
+         // Ignore errors - user may not have records
+       });
+     }
+   }, [address, requestRecords, config.CONTRACT_PROGRAM_ID]);
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />

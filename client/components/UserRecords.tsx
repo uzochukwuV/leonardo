@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useUserRecords, ReceiptRecord, SettlementProofRecord, CancellationProofRecord } from '@/hooks/useUserRecords';
+import { useUserRecords, ReceiptRecord, SettlementProofRecord } from '@/hooks/useUserRecords';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from './ui/button';
 import { getTokenPair } from '@/lib/token-pairs';
@@ -26,7 +26,7 @@ const EmptyState = ({ message }: { message: string }) => (
 );
 
 export function UserRecords() {
-  const { receipts, settlements, cancellations, loading, error, refresh } = useUserRecords();
+  const { receipts, settlements, loading, error, refresh } = useUserRecords();
   const [activeTab, setActiveTab] = useState<Tab>('active');
 
   const renderReceipt = (record: ReceiptRecord) => {
@@ -75,28 +75,11 @@ export function UserRecords() {
     );
   };
 
-    const renderCancellation = (record: CancellationProofRecord) => {
-    const returnedTokenSymbol = record.is_buy ? 'USDC' : 'ALEO'; // Placeholder
-    const amount = (parseInt(record.returned_amount) / 1e6).toFixed(4); // Assuming 6 decimals
-    return (
-      <RecordCard key={record.order_id}>
-         <div className="space-y-2">
-           <div className="flex justify-between items-start">
-              <span className="font-bold text-muted-foreground">Order Cancelled</span>
-              <span className="text-xs text-muted-foreground">
-                {new Date(parseInt(record.cancelled_at) * 1000).toLocaleString()}
-              </span>
-            </div>
-            <RecordRow label="Tokens Returned" value={`${amount} ${returnedTokenSymbol}`} />
-            <RecordRow label="Order ID" value={<span className="truncate block">{record.order_id.substring(0, 20)}...</span>} />
-         </div>
-      </RecordCard>
-    );
-  };
+  
 
 
   const renderContent = () => {
-    if (loading && receipts.length === 0 && settlements.length === 0 && cancellations.length === 0) {
+    if (loading && receipts.length === 0 && settlements.length === 0) {
       return (
         <div className="flex justify-center items-center py-12">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -126,12 +109,6 @@ export function UserRecords() {
           <div className="space-y-3">{settlements.map(renderSettlement)}</div>
         ) : (
           <EmptyState message="No trade history found." />
-        );
-      case 'cancelled':
-        return cancellations.length > 0 ? (
-            <div className="space-y-3">{cancellations.map(renderCancellation)}</div>
-        ) : (
-            <EmptyState message="No cancelled orders found." />
         );
       default:
         return null;

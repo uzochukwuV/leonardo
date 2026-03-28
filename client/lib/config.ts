@@ -1,11 +1,11 @@
 /**
  * Application Configuration
- * Compatible with private_orderbook_v19.aleo
+ * Compatible with private_matching_orderbook_v1.aleo
  */
 
 export const config = {
-  // Deployed contract program ID (v19)
-  CONTRACT_PROGRAM_ID: 'private_orderbook_v19.aleo',
+  // Deployed contract program ID (v1)
+  CONTRACT_PROGRAM_ID: 'private_matching_orderbook_v1.aleo',
 
   // Native ALEO credits token ID (0field = use credits.aleo)
   NATIVE_CREDITS_ID: '0field',
@@ -39,7 +39,7 @@ export const config = {
   TX_POLL_INTERVAL: 3000,
   TX_MAX_POLL_ATTEMPTS: 60,
 
-  // Contract constants (must match private_orderbook_v19.aleo)
+  // Contract constants (must match private_matching_orderbook_v1.aleo)
   SETTLER_FEE_BPS: 10, // 0.10% to settler
   PROTOCOL_FEE_BPS: 5, // 0.05% to treasury
 
